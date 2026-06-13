@@ -5,15 +5,17 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures::prelude::*;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use slog::Logger;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tsclientlib::audio::AudioHandler;
 use tsclientlib::prelude::*;
 use tsclientlib::{ChannelId, ClientId, Connection, DisconnectOptions, Identity, StreamItem};
 use tsproto_packets::packets::AudioData;
 
-const FRAME_SAMPLES: usize = 48000 / 50;
+const SAMPLE_RATE: u32 = 48_000;
+const FRAME_MS: u64 = 20;
+const CHANNELS: usize = 2;
+const FRAME_SAMPLES: usize = SAMPLE_RATE as usize / (1000 / FRAME_MS as usize) * CHANNELS;
 
 #[derive(Parser, Debug)]
 #[command(about = "Record mixed TeamSpeak channel audio to WAV")]
@@ -104,16 +106,16 @@ async fn main() -> Result<()> {
 
     let spec = WavSpec {
         channels: 1,
-        sample_rate: 48_000,
+        sample_rate: SAMPLE_RATE,
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
     let mut wav_writer =
         WavWriter::create(&args.output, spec).context("create wav writer")?;
 
-    let mut audio_handler = AudioHandler::new(Logger::root(slog::Discard, slog::o!()));
+    let mut audio_handler = AudioHandler::new();
     let mut frame = vec![0.0f32; FRAME_SAMPLES];
-    let mut interval = time::interval(Duration::from_millis(20));
+    let mut interval = time::interval(Duration::from_millis(FRAME_MS));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     let mut events = connection.events();
@@ -124,18 +126,17 @@ async fn main() -> Result<()> {
                 break;
             }
             _ = interval.tick() => {
+                frame.fill(0.0);
                 audio_handler.fill_buffer(&mut frame);
-                for sample in &frame {
-                    let clipped = sample.clamp(-1.0, 1.0);
-                    let pcm = (clipped * i16::MAX as f32) as i16;
-                    wav_writer.write_sample(pcm)?;
-                }
+                write_mono_samples(&mut wav_writer, &frame)?;
             }
             item = events.next() => {
                 match item {
                     Some(Ok(StreamItem::Audio(packet))) => {
                         if let Some(from) = audio_sender_id(&packet) {
-                            let _ = audio_handler.handle_packet(from, packet);
+                            if let Err(error) = audio_handler.handle_packet(from, packet) {
+                                warn!(%error, "failed to handle audio packet");
+                            }
                         }
                     }
                     Some(Ok(_)) => {}
@@ -163,6 +164,16 @@ async fn main() -> Result<()> {
         args.channel_id,
         args.output.display()
     );
+    Ok(())
+}
+
+fn write_mono_samples(wav_writer: &mut WavWriter, stereo_frame: &[f32]) -> Result<()> {
+    for chunk in stereo_frame.chunks_exact(CHANNELS) {
+        let mono = (chunk[0] + chunk[1]) * 0.5;
+        let clipped = mono.clamp(-1.0, 1.0);
+        let pcm = (clipped * i16::MAX as f32) as i16;
+        wav_writer.write_sample(pcm)?;
+    }
     Ok(())
 }
 
