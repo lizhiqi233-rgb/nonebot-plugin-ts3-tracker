@@ -138,8 +138,7 @@ GitHub Actions 会在每次 push 后编译 Linux 版本：
 1. 打开仓库 [Actions](https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker/actions)
 2. 选择最新的 **Build recorder sidecar** 工作流
 3. 在 **Artifacts** 中下载对应架构：
-   - `ts3-recorder-sidecar-aarch64-unknown-linux-gnu`：ARM64（树莓派 64 位等）
-   - `ts3-recorder-sidecar-armv7-unknown-linux-gnueabihf`：ARMv7 32 位
+   - `ts3-recorder-sidecar-aarch64-unknown-linux-gnu`：ARM64（树莓派 64 位、主流 ARM 服务器）
    - `ts3-recorder-sidecar-x86_64-unknown-linux-gnu`：x86_64
 
 解压后安装并配置路径：

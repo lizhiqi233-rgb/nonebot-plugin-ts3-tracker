@@ -17,4 +17,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tsclientlib = { version = "0.2", features = ["audio"] }
-tsproto-packets = "0.2"
+tsproto-packets = "0.1"
