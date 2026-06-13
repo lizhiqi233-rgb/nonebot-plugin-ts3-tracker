@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from pathlib import Path
 
 from nonebot import logger
@@ -29,6 +31,7 @@ class SidecarLauncher:
             raise FileNotFoundError(
                 f"recorder sidecar not found: {self._sidecar_path}"
             )
+        _ensure_sidecar_runnable(self._sidecar_path)
 
         command = [
             str(self._sidecar_path),
@@ -52,7 +55,14 @@ class SidecarLauncher:
         if channel_password:
             command.extend(["--channel-password", channel_password])
 
-        session.wav_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir = session.wav_path.parent
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise PermissionError(
+                f"cannot create recording output directory {output_dir}"
+            ) from exc
+
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -102,6 +112,19 @@ class SidecarLauncher:
                 session.channel_id,
                 session.channel_name,
             )
+
+
+def _ensure_sidecar_runnable(sidecar_path: Path) -> None:
+    if sys.platform == "win32":
+        return
+    if os.access(sidecar_path, os.X_OK):
+        return
+    if os.access(sidecar_path, os.R_OK):
+        raise PermissionError(
+            f"recorder sidecar is not executable: {sidecar_path} "
+            f"(run: chmod +x {sidecar_path})"
+        )
+    raise PermissionError(f"recorder sidecar is not readable: {sidecar_path}")
 
 
 def resolve_sidecar_path(configured_path: str, plugin_dir: Path) -> Path:
