@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from nonebot.compat import BaseModel, field_validator
 
 
@@ -20,6 +22,17 @@ class Ts3TrackerSettings(BaseModel):
     poll_interval_seconds: int = 5
     startup_silent: bool = True
     data_dir: str = ""
+    # full：进退服均通知；join_only：仅进服通知（换频道不产生事件，因用户唯一键不变）
+    notification_push_mode: Literal["full", "join_only"] = "full"
+    recording_enabled: bool = False
+    recording_channels: str = ""
+    recording_identities: str = ""
+    recording_output_dir: str = ""
+    recording_sidecar_path: str = ""
+    recording_server_password: str = ""
+    recording_channel_password: str = ""
+    recording_nickname_prefix: str = "RecBot"
+    recording_min_session_seconds: int = 5
 
     @field_validator(
         "server_host",
@@ -29,6 +42,13 @@ class Ts3TrackerSettings(BaseModel):
         "notify_target_users",
         "group_whitelist_groups",
         "data_dir",
+        "recording_channels",
+        "recording_identities",
+        "recording_output_dir",
+        "recording_sidecar_path",
+        "recording_server_password",
+        "recording_channel_password",
+        "recording_nickname_prefix",
         mode="before",
     )
     @classmethod
@@ -39,6 +59,11 @@ class Ts3TrackerSettings(BaseModel):
     @classmethod
     def validate_positive_int(cls, value: int) -> int:
         return max(1, value)
+
+    @field_validator("recording_min_session_seconds")
+    @classmethod
+    def validate_recording_min_session(cls, value: int) -> int:
+        return max(0, value)
 
     @field_validator("query_timeout_seconds")
     @classmethod
@@ -61,6 +86,9 @@ class Ts3TrackerSettings(BaseModel):
 
     def get_notify_groups(self) -> list[str]:
         return self.parse_targets(self.notify_target_groups)
+
+    def get_recording_channels(self) -> list[str]:
+        return self.parse_targets(self.recording_channels)
 
     def filter_groups_by_whitelist(self, group_ids: list[str]) -> list[str]:
         if not self.group_whitelist_enabled:

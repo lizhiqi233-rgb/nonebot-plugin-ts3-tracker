@@ -7,3 +7,7 @@ build/
 *.egg-info/
 *.pyc
 data/
+nonebot_plugin_ts3_tracker/recorder_sidecar/target/
+recordings/
+identities/
+*.wav

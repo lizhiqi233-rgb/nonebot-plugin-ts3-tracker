@@ -10,6 +10,7 @@
 - 发送群聊 / 私聊主动通知
 - 群级通知开关持久化
 - 群白名单限制命令使用范围
+- 指定频道有人时自动录音（Rust sidecar）
 
 ## 安装
 
@@ -40,6 +41,7 @@ plugins = ["nonebot_plugin_ts3_tracker"]
 - `/tsinfo`：查看 TS 服务器详细信息
 - `/tsnotify on`：开启本群进退服通知
 - `/tsnotify off`：关闭本群进退服通知
+- `/tsrecord`：查看频道录音状态
 
 如果配置 `TS3_TRACKER__COMMAND_PREFIX_REQUIRED=false`，则也支持直接发送：
 
@@ -115,6 +117,64 @@ TS3_TRACKER__DATA_DIR=data/ts3_tracker
 | `TS3_TRACKER__POLL_INTERVAL_SECONDS` | 轮询间隔，单位秒 |
 | `TS3_TRACKER__STARTUP_SILENT` | 启动时是否静默建立快照，不立即推送历史变化 |
 | `TS3_TRACKER__DATA_DIR` | 自定义数据目录，不填写时使用 `nonebot-plugin-localstore` |
+| `TS3_TRACKER__RECORDING_ENABLED` | 是否开启指定频道录音 |
+| `TS3_TRACKER__RECORDING_CHANNELS` | 监控频道列表（频道 ID 或名称，逗号/换行分隔） |
+| `TS3_TRACKER__RECORDING_IDENTITIES` | 录音 bot identity 文件路径或字符串，多个用逗号/换行分隔 |
+| `TS3_TRACKER__RECORDING_OUTPUT_DIR` | 录音输出目录，默认插件目录下 `recordings/` |
+| `TS3_TRACKER__RECORDING_SIDECAR_PATH` | sidecar 二进制绝对路径，留空则自动探测 |
+| `TS3_TRACKER__RECORDING_SERVER_PASSWORD` | TS 服务器密码（如有） |
+| `TS3_TRACKER__RECORDING_CHANNEL_PASSWORD` | 默认频道密码（如有） |
+| `TS3_TRACKER__RECORDING_NICKNAME_PREFIX` | 录音 bot 昵称前缀，默认 `RecBot` |
+| `TS3_TRACKER__RECORDING_MIN_SESSION_SECONDS` | 低于该秒数的录音会被丢弃，默认 `5` |
+
+## 频道录音
+
+录音功能通过 Rust sidecar（`ts3-recorder-sidecar`）连接 TS 语音协议，在**配置的频道内出现真人用户**时自动混音录制为 WAV。
+
+### 获取 sidecar 二进制
+
+GitHub Actions 会在每次 push 后编译 Linux 版本：
+
+1. 打开仓库 [Actions](https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker/actions)
+2. 选择最新的 **Build recorder sidecar** 工作流
+3. 在 **Artifacts** 中下载对应架构：
+   - `ts3-recorder-sidecar-aarch64-unknown-linux-gnu`：ARM64（树莓派 64 位等）
+   - `ts3-recorder-sidecar-armv7-unknown-linux-gnueabihf`：ARMv7 32 位
+   - `ts3-recorder-sidecar-x86_64-unknown-linux-gnu`：x86_64
+
+解压后安装并配置路径：
+
+```bash
+sudo install -m 755 ts3-recorder-sidecar /usr/local/bin/
+```
+
+```env
+TS3_TRACKER__RECORDING_SIDECAR_PATH=/usr/local/bin/ts3-recorder-sidecar
+```
+
+### 录音配置示例
+
+```env
+TS3_TRACKER__RECORDING_ENABLED=true
+TS3_TRACKER__RECORDING_CHANNELS=5,Lobby,Meeting
+TS3_TRACKER__RECORDING_IDENTITIES=/opt/ts3/identity1.txt,/opt/ts3/identity2.txt
+TS3_TRACKER__RECORDING_OUTPUT_DIR=/var/lib/ts3-recordings
+TS3_TRACKER__RECORDING_NICKNAME_PREFIX=RecBot
+```
+
+### 文件布局
+
+```text
+{RECORDING_OUTPUT_DIR}/{channel_id}_{channel_name}/2026-06-13_143052.wav
+{RECORDING_OUTPUT_DIR}/{channel_id}_{channel_name}/2026-06-13_143052.json
+```
+
+### 注意事项
+
+- 每个**同时录制**的频道需要 1 个独立 TS identity
+- identity 格式需兼容 [tsclientlib](https://github.com/ReSpeak/tsclientlib)
+- 录音 bot 麦克风默认静音，仅接收频道语音
+- 部署前请确保参与者知晓录音行为
 
 ## 群白名单规则
 

@@ -1,0 +1,84 @@
+name: Build recorder sidecar
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: ts3-recorder-sidecar-x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: ts3-recorder-sidecar-aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build sidecar
+        working-directory: nonebot_plugin_ts3_tracker/recorder_sidecar
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: nonebot_plugin_ts3_tracker/recorder_sidecar/target/${{ matrix.target }}/release/ts3-recorder-sidecar
+          if-no-files-found: error
+
+  build-armv7:
+    name: Build (armv7-unknown-linux-gnueabihf)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            gcc-arm-linux-gnueabihf \
+            libssl-dev:armhf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: armv7-unknown-linux-gnueabihf
+
+      - name: Build sidecar
+        working-directory: nonebot_plugin_ts3_tracker/recorder_sidecar
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: /usr/lib/arm-linux-gnueabihf/pkgconfig
+        run: cargo build --release --target armv7-unknown-linux-gnueabihf
+
+      - name: Upload sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts3-recorder-sidecar-armv7-unknown-linux-gnueabihf
+          path: nonebot_plugin_ts3_tracker/recorder_sidecar/target/armv7-unknown-linux-gnueabihf/release/ts3-recorder-sidecar
+          if-no-files-found: error

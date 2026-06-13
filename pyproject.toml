@@ -1,8 +1,8 @@
 [project]
 name = "nonebot-plugin-ts3-tracker"
-version = "1.0.5"
-description = "TeamSpeak 3 query and join/leave notification plugin for NoneBot2"
-authors = [{ name = "moeneri" }]
+version = "1.1.0"
+description = "TeamSpeak 3 query, join/leave notification, and channel recording plugin for NoneBot2"
+authors = [{ name = "lizhiqi233-rgb" }]
 readme = "README.md"
 license = "MIT"
 keywords = ["nonebot", "nonebot2", "ts3", "teamspeak3", "serverquery", "onebot"]
@@ -14,8 +14,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/moeneri/nonebot-plugin-ts3-tracker"
-Repository = "https://github.com/moeneri/nonebot-plugin-ts3-tracker"
+Homepage = "https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker"
+Repository = "https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker"
 
 [dependency-groups]
 test = [

@@ -27,8 +27,10 @@ __plugin_meta__ = PluginMetadata(
         "/tsinfo：查看TS服务器详细信息\n"
         "/tsnotify on：开启本群进退服通知\n"
         "/tsnotify off：关闭本群进退服通知\n"
+        "/tsrecord：查看频道录音状态\n"
         "可选：配置 command_prefix_required=false 后，可直接发送上号/ts/tsinfo\n\n"
-        "可选：开启轮询后发送 TS3 进服/退服通知"
+        "可选：开启轮询后发送 TS3 进服/退服通知（notification_push_mode=join_only 时仅进服；换频道不通知）\n"
+        "可选：recording_enabled=true 后，对 recording_channels 中有人频道自动录音"
     ),
     type="application",
     homepage="https://github.com/moeneri/nonebot-plugin-ts3-tracker",
@@ -127,6 +129,12 @@ ts3_notify = on_command(
     block=True,
 )
 
+ts3_record = on_command(
+    "tsrecord",
+    priority=MATCHER_PRIORITY,
+    block=True,
+)
+
 ts3_plain_status = on_regex(
     r"^(?:上号|ts)$",
     flags=re.IGNORECASE,
@@ -198,6 +206,20 @@ async def handle_ts3_plain_notify(event: MessageEvent) -> None:
     return await _handle_notify_switch(
         event, enabled=False, finish=ts3_plain_notify.finish
     )
+
+
+@ts3_record.handle()
+async def handle_ts3_record(event: MessageEvent) -> None:
+    denied_message = _ensure_group_allowed(event)
+    if denied_message is not None:
+        return await ts3_record.finish(denied_message)
+
+    if not plugin_config.recording_enabled:
+        return await ts3_record.finish(
+            "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+        )
+
+    return await ts3_record.finish(runtime.build_recording_status_message())
 
 
 driver = get_driver()

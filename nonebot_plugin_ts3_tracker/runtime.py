@@ -16,6 +16,7 @@ import nonebot_plugin_localstore as store
 from .config import Ts3TrackerSettings
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
+from .recording import RecordingManager
 from .service import Ts3TrackerService
 from .storage import GroupNotifyStore, SnapshotStore, TrackedClientSnapshot
 
@@ -51,6 +52,9 @@ class Ts3TrackerRuntime:
         self._group_notify_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._poll_task: asyncio.Task[None] | None = None
+        self._recording_manager = RecordingManager(
+            settings, Path(__file__).resolve().parent
+        )
         self.service._duration_provider = self.get_online_duration_seconds
 
     async def startup(self) -> None:
@@ -69,20 +73,37 @@ class Ts3TrackerRuntime:
 
         if not self.settings.notification_enabled:
             logger.info("TS3 通知轮询已关闭。")
-            return
+        else:
+            mode_text = (
+                "仅进服"
+                if self.settings.notification_push_mode == "join_only"
+                else "进退服"
+            )
+            logger.info(
+                "TS3 通知轮询已启动，推送模式：{}，轮询间隔 {} 秒，通知群：{}，通知私聊：{}，群白名单模式：{}。",
+                mode_text,
+                self.settings.poll_interval_seconds,
+                ",".join(self.get_effective_notify_groups()) or "-",
+                self.settings.notify_target_users or "-",
+                "开启" if self.settings.group_whitelist_enabled else "关闭",
+            )
 
-        logger.info(
-            "TS3 通知轮询已启动，轮询间隔 {} 秒，通知群：{}，通知私聊：{}，群白名单模式：{}。",
-            self.settings.poll_interval_seconds,
-            ",".join(self.get_effective_notify_groups()) or "-",
-            self.settings.notify_target_users or "-",
-            "开启" if self.settings.group_whitelist_enabled else "关闭",
-        )
-        await self.sync_once(notify=not self.settings.startup_silent)
-        self._ensure_poll_task()
+        if self.settings.recording_enabled:
+            logger.info(
+                "TS3 频道录音已开启，目标频道：{}，identity 数量：{}。",
+                ",".join(self.settings.get_recording_channels()) or "-",
+                len(self._recording_manager.identity_count),
+            )
+        else:
+            logger.info("TS3 频道录音已关闭。")
+
+        if self.settings.notification_enabled or self.settings.recording_enabled:
+            await self.sync_once(notify=not self.settings.startup_silent)
+            self._ensure_poll_task()
 
     async def shutdown(self) -> None:
         self._stop_event.set()
+        await self._recording_manager.shutdown()
         if self._poll_task is not None:
             self._poll_task.cancel()
             try:
@@ -94,10 +115,11 @@ class Ts3TrackerRuntime:
     async def sync_once(self, *, notify: bool) -> NotificationDiff:
         missing_fields = self.service.get_missing_required_fields()
         if missing_fields:
-            logger.warning(
-                "TS3 通知轮询跳过，配置不完整：{}",
-                "、".join(missing_fields),
-            )
+            if self.settings.notification_enabled or self.settings.recording_enabled:
+                logger.warning(
+                    "TS3 轮询跳过，配置不完整：{}",
+                    "、".join(missing_fields),
+                )
             return NotificationDiff(joined=[], left=[])
 
         try:
@@ -126,6 +148,9 @@ class Ts3TrackerRuntime:
                 "、".join(item.nickname for item in diff.joined) or "无",
                 "、".join(item.nickname for item in diff.left) or "无",
             )
+
+        if self.settings.recording_enabled:
+            await self._recording_manager.sync(status, now=self._now_factory())
 
         return diff
 
@@ -193,7 +218,7 @@ class Ts3TrackerRuntime:
                 "、".join(item.nickname for item in diff.joined),
             )
             messages.append(self._format_join_message(status, diff.joined))
-        if diff.left:
+        if diff.left and self.settings.notification_push_mode == "full":
             logger.info(
                 "{} 退出了服务器。",
                 "、".join(item.nickname for item in diff.left),
@@ -227,16 +252,10 @@ class Ts3TrackerRuntime:
     def _format_join_message(
         self, status: Ts3ServerStatus, snapshots: list[TrackedClientSnapshot]
     ) -> str:
-        lines: list[str] = []
-        for index, snapshot in enumerate(snapshots):
-            if index:
-                lines.append("")
-            lines.append(f"🔔用户 {snapshot.nickname} 已进入服务器")
-            lines.append(f"🧾 昵称：{snapshot.nickname}")
-            lines.append(f"🟢 上线时间：{snapshot.first_seen_at or self._format_now()}")
-            lines.append(f"📣 {snapshot.nickname} 进入了 TS 服务器")
-        lines.append(f"👥 当前在线人数：{status.online_count}")
-        lines.append(f"📜 在线列表：{self._format_online_list(status)}")
+        lines = [
+            f"{snapshot.nickname} 进入了 TS 服务器" for snapshot in snapshots
+        ]
+        lines.append(f"在线列表：{self._format_online_list(status)}")
         return "\n".join(lines)
 
     def _format_leave_message(
@@ -357,6 +376,24 @@ class Ts3TrackerRuntime:
         if not status.users:
             return "暂无在线用户"
         return ", ".join(user.nickname for user in status.users)
+
+    def build_recording_status_message(self) -> str:
+        channels = self.settings.get_recording_channels()
+        sessions = self._recording_manager.get_active_sessions()
+        lines = [
+            "TS3 频道录音状态",
+            f"监控频道：{', '.join(channels) if channels else '-'}",
+            f"可用 identity：{self._recording_manager.identity_count}",
+        ]
+        if not sessions:
+            lines.append("当前无进行中的录音会话。")
+        else:
+            lines.append("进行中的录音：")
+            for session in sessions:
+                lines.append(
+                    f"- {session.channel_name} ({session.channel_id}) -> {session.wav_path.name}"
+                )
+        return "\n".join(lines)
 
     def get_online_duration_seconds(self, user: Ts3OnlineUser) -> int | None:
         key = self._user_key(user)

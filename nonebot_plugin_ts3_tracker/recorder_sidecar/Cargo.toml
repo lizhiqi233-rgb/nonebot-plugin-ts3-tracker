@@ -1,0 +1,20 @@
+[package]
+name = "ts3-recorder-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "Headless TeamSpeak voice recorder for nonebot_plugin_ts3_tracker"
+
+[[bin]]
+name = "ts3-recorder-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+hound = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tsclientlib = { version = "0.2", features = ["audio"] }
+tsproto-packets = "0.2"
