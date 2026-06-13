@@ -8,6 +8,7 @@ from nonebot import logger
 
 from ..config import Ts3TrackerSettings
 from ..models import Ts3ServerStatus
+from ..storage_paths import resolve_identities_dir, resolve_recordings_dir
 from .paths import build_session_paths
 from .session import ChannelRecordingSession
 from .sidecar import SidecarLauncher, resolve_identity_entries, resolve_sidecar_path
@@ -17,11 +18,12 @@ class RecordingManager:
     def __init__(self, settings: Ts3TrackerSettings, plugin_dir: Path) -> None:
         self.settings = settings
         self._plugin_dir = plugin_dir
+        self._identities_dir = resolve_identities_dir()
         self._launcher = SidecarLauncher(
             resolve_sidecar_path(settings.recording_sidecar_path, plugin_dir)
         )
         self._identities = resolve_identity_entries(
-            settings.recording_identities, plugin_dir
+            settings.recording_identities, self._identities_dir
         )
         self._sessions: dict[str, ChannelRecordingSession] = {}
         self._identity_pool: list[str] = []
@@ -238,6 +240,4 @@ class RecordingManager:
         self._identity_pool.append(session.identity)
 
     def _recording_output_dir(self) -> Path:
-        if self.settings.recording_output_dir:
-            return Path(self.settings.recording_output_dir).expanduser()
-        return self._plugin_dir / "recordings"
+        return resolve_recordings_dir(self.settings)

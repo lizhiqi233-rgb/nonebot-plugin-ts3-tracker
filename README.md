@@ -94,7 +94,7 @@ TS3_TRACKER__GROUP_WHITELIST_GROUPS=
 
 TS3_TRACKER__POLL_INTERVAL_SECONDS=5
 TS3_TRACKER__STARTUP_SILENT=true
-TS3_TRACKER__DATA_DIR=data/ts3_tracker
+# TS3_TRACKER__DATA_DIR=
 ```
 
 ## 配置说明
@@ -116,11 +116,11 @@ TS3_TRACKER__DATA_DIR=data/ts3_tracker
 | `TS3_TRACKER__GROUP_WHITELIST_GROUPS` | 允许使用群命令、允许接收群通知的白名单群号 |
 | `TS3_TRACKER__POLL_INTERVAL_SECONDS` | 轮询间隔，单位秒 |
 | `TS3_TRACKER__STARTUP_SILENT` | 启动时是否静默建立快照，不立即推送历史变化 |
-| `TS3_TRACKER__DATA_DIR` | 自定义数据目录，不填写时使用 `nonebot-plugin-localstore` |
+| `TS3_TRACKER__DATA_DIR` | 自定义插件数据根目录；不填时使用 `nonebot-plugin-localstore` 插件数据目录 |
 | `TS3_TRACKER__RECORDING_ENABLED` | 是否开启指定频道录音 |
 | `TS3_TRACKER__RECORDING_CHANNELS` | 监控频道列表（频道 ID 或名称，逗号/换行分隔） |
-| `TS3_TRACKER__RECORDING_IDENTITIES` | 录音 bot identity 文件路径或字符串，多个用逗号/换行分隔 |
-| `TS3_TRACKER__RECORDING_OUTPUT_DIR` | 录音输出目录，默认插件目录下 `recordings/` |
+| `TS3_TRACKER__RECORDING_IDENTITIES` | identity 文件路径/文件名/字符串；留空则自动加载配置目录下 `identities/` 内全部文件 |
+| `TS3_TRACKER__RECORDING_OUTPUT_DIR` | 录音输出目录；留空时使用插件数据目录下 `recordings/` |
 | `TS3_TRACKER__RECORDING_SIDECAR_PATH` | sidecar 二进制绝对路径，留空则自动探测 |
 | `TS3_TRACKER__RECORDING_SERVER_PASSWORD` | TS 服务器密码（如有） |
 | `TS3_TRACKER__RECORDING_CHANNEL_PASSWORD` | 默认频道密码（如有） |
@@ -156,17 +156,30 @@ TS3_TRACKER__RECORDING_SIDECAR_PATH=/usr/local/bin/ts3-recorder-sidecar
 ```env
 TS3_TRACKER__RECORDING_ENABLED=true
 TS3_TRACKER__RECORDING_CHANNELS=5,Lobby,Meeting
-TS3_TRACKER__RECORDING_IDENTITIES=/opt/ts3/identity1.txt,/opt/ts3/identity2.txt
-TS3_TRACKER__RECORDING_OUTPUT_DIR=/var/lib/ts3-recordings
+# 留空则自动加载 {config_dir}/nonebot_plugin_ts3_tracker/identities/ 下全部文件
+TS3_TRACKER__RECORDING_IDENTITIES=
 TS3_TRACKER__RECORDING_NICKNAME_PREFIX=RecBot
 ```
 
-### 文件布局
+identity 文件默认放在 NoneBot 配置目录下插件对应文件夹：
 
 ```text
-{RECORDING_OUTPUT_DIR}/{channel_id}_{channel_name}/2026-06-13_143052.wav
-{RECORDING_OUTPUT_DIR}/{channel_id}_{channel_name}/2026-06-13_143052.json
+{config_dir}/nonebot_plugin_ts3_tracker/identities/rec1.txt
+{config_dir}/nonebot_plugin_ts3_tracker/identities/rec2.txt
 ```
+
+也可在 `RECORDING_IDENTITIES` 中写相对文件名（如 `rec1.txt`）或绝对路径。
+
+### 文件布局
+
+录音默认写入 NoneBot 数据目录下插件对应文件夹：
+
+```text
+{data_dir}/nonebot_plugin_ts3_tracker/recordings/{channel_id}_{channel_name}/2026-06-13_143052.wav
+{data_dir}/nonebot_plugin_ts3_tracker/recordings/{channel_id}_{channel_name}/2026-06-13_143052.json
+```
+
+可用 `nb localstore` 查看当前机器人的实际 `{data_dir}` 与 `{config_dir}`。
 
 ### 注意事项
 
@@ -259,9 +272,12 @@ APEX: TEST(42秒)
 
 ## 数据文件
 
-插件会保存以下运行时数据：
+插件通过 `nonebot-plugin-localstore` 管理路径（可用 `nb localstore` 查看）：
 
-- `snapshot.json`：在线用户快照
-- `group_notify.json`：群级通知开关状态
+| 位置 | 内容 |
+| --- | --- |
+| 插件数据目录 | `snapshot.json`、`group_notify.json` |
+| 插件数据目录 `recordings/` | 频道录音 WAV 与 metadata |
+| 插件配置目录 `identities/` | TS voice identity 文件 |
 
-如果没有设置 `TS3_TRACKER__DATA_DIR`，则默认使用 `nonebot-plugin-localstore` 的插件数据目录。
+若设置了 `TS3_TRACKER__DATA_DIR`，则作为插件数据根目录（快照与默认录音目录均在其下）。

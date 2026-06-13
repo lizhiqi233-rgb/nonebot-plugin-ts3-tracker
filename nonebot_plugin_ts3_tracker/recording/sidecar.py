@@ -143,21 +143,25 @@ def resolve_sidecar_path(configured_path: str, plugin_dir: Path) -> Path:
     return candidates[0]
 
 
-def resolve_identity_entries(raw: str, plugin_dir: Path) -> list[str]:
+def resolve_identity_entries(raw: str, identities_dir: Path) -> list[str]:
     entries: list[str] = []
     for item in _split_lines(raw):
         path = Path(item).expanduser()
         if path.is_file():
-            entries.append(str(path))
+            entries.append(str(path.resolve()))
+            continue
+        candidate = identities_dir / item
+        if candidate.is_file():
+            entries.append(str(candidate.resolve()))
             continue
         if path.is_absolute() or "/" in item or "\\" in item:
             logger.warning("TS3 recording identity path not found: {}", item)
             continue
         entries.append(item)
-    if not entries and (plugin_dir / "identities").is_dir():
-        for path in sorted((plugin_dir / "identities").glob("*")):
+    if not entries and identities_dir.is_dir():
+        for path in sorted(identities_dir.glob("*")):
             if path.is_file():
-                entries.append(str(path))
+                entries.append(str(path.resolve()))
     return entries
 
 

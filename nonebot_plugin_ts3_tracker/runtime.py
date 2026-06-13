@@ -14,6 +14,11 @@ require("nonebot_plugin_localstore")
 import nonebot_plugin_localstore as store
 
 from .config import Ts3TrackerSettings
+from .storage_paths import (
+    ensure_storage_layout,
+    resolve_identities_dir,
+    resolve_recordings_dir,
+)
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
 from .recording import RecordingManager
@@ -59,6 +64,7 @@ class Ts3TrackerRuntime:
 
     async def startup(self) -> None:
         self._stop_event.clear()
+        ensure_storage_layout(self.settings)
         try:
             self._snapshot = self._store.load()
         except Exception as exc:
@@ -90,9 +96,11 @@ class Ts3TrackerRuntime:
 
         if self.settings.recording_enabled:
             logger.info(
-                "TS3 频道录音已开启，目标频道：{}，identity 数量：{}。",
+                "TS3 频道录音已开启，目标频道：{}，identity 数量：{}，录音目录：{}，identity 目录：{}。",
                 ",".join(self.settings.get_recording_channels()) or "-",
                 self._recording_manager.identity_count,
+                resolve_recordings_dir(self.settings),
+                resolve_identities_dir(),
             )
         else:
             logger.info("TS3 频道录音已关闭。")
@@ -398,6 +406,8 @@ class Ts3TrackerRuntime:
             "TS3 频道录音状态",
             f"监控频道：{', '.join(channels) if channels else '-'}",
             f"可用 identity：{self._recording_manager.identity_count}",
+            f"录音目录：{resolve_recordings_dir(self.settings)}",
+            f"identity 目录：{resolve_identities_dir()}",
         ]
         if not sessions:
             lines.append("当前无进行中的录音会话。")
