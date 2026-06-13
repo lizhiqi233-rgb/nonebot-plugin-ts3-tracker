@@ -64,10 +64,10 @@ async fn main() -> Result<()> {
         .name(nickname)
         .channel_id(ChannelId(args.channel_id));
     if !args.password.is_empty() {
-        builder = builder.password(&args.password);
+        builder = builder.password(args.password.clone());
     }
     if !args.channel_password.is_empty() {
-        builder = builder.channel_password(&args.channel_password);
+        builder = builder.channel_password(args.channel_password.clone());
     }
 
     let mut connection = builder.connect()?;
