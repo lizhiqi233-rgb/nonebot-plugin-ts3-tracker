@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     let mut wav_writer =
         WavWriter::create(&args.output, spec).context("create wav writer")?;
 
-    let mut audio_handler = AudioHandler::default();
+    let mut audio_handler = AudioHandler::new();
     let mut frame = vec![0.0f32; FRAME_SAMPLES];
     let mut interval = time::interval(Duration::from_millis(20));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
