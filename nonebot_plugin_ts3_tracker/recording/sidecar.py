@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -127,20 +128,39 @@ def _ensure_sidecar_runnable(sidecar_path: Path) -> None:
     raise PermissionError(f"recorder sidecar is not readable: {sidecar_path}")
 
 
+SIDECAR_BINARY_NAME = "ts3-recorder-sidecar"
+
+
+def _sidecar_platform_dir() -> str:
+    machine = platform.machine().casefold()
+    if sys.platform == "win32":
+        return "windows-x86_64"
+    if machine in {"aarch64", "arm64"}:
+        return "linux-aarch64"
+    return "linux-x86_64"
+
+
 def resolve_sidecar_path(configured_path: str, plugin_dir: Path) -> Path:
     if configured_path.strip():
         return Path(configured_path).expanduser()
 
+    sidecar_root = plugin_dir / "recorder_sidecar"
+    default_candidate = (
+        sidecar_root / "bin" / _sidecar_platform_dir() / SIDECAR_BINARY_NAME
+    )
     candidates = [
-        plugin_dir / "recorder_sidecar" / "target" / "release" / "ts3-recorder-sidecar.exe",
-        plugin_dir / "recorder_sidecar" / "target" / "release" / "ts3-recorder-sidecar",
-        plugin_dir / "recorder_sidecar" / "target" / "debug" / "ts3-recorder-sidecar.exe",
-        plugin_dir / "recorder_sidecar" / "target" / "debug" / "ts3-recorder-sidecar",
+        default_candidate,
+        sidecar_root / "bin" / SIDECAR_BINARY_NAME,
+        sidecar_root / "bin" / f"{SIDECAR_BINARY_NAME}.exe",
+        sidecar_root / "target" / "release" / f"{SIDECAR_BINARY_NAME}.exe",
+        sidecar_root / "target" / "release" / SIDECAR_BINARY_NAME,
+        sidecar_root / "target" / "debug" / f"{SIDECAR_BINARY_NAME}.exe",
+        sidecar_root / "target" / "debug" / SIDECAR_BINARY_NAME,
     ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return candidates[0]
+    return default_candidate
 
 
 def resolve_identity_entries(raw: str, identities_dir: Path) -> list[str]:
