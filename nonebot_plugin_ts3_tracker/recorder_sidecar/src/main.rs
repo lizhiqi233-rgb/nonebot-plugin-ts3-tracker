@@ -62,7 +62,10 @@ async fn main() -> Result<()> {
     let mut builder = Connection::build(address)
         .identity(identity)
         .name(nickname)
-        .channel_id(ChannelId(args.channel_id));
+        .channel_id(ChannelId(args.channel_id))
+        .input_muted(true)
+        .input_hardware_enabled(false)
+        .output_hardware_enabled(true);
     if !args.password.is_empty() {
         builder = builder.password(args.password.clone());
     }
@@ -86,9 +89,9 @@ async fn main() -> Result<()> {
         state
             .client_update()
             .set_input_muted(true)
-            .set_output_muted(true)
+            .set_output_muted(false)
             .send(&mut connection)
-            .context("failed to mute recorder client")?;
+            .context("failed to configure recorder client audio flags")?;
     }
 
     eprintln!("READY channel_id={} output={}", args.channel_id, args.output.display());
