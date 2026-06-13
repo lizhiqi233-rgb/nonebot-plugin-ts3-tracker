@@ -33,6 +33,8 @@ class Ts3TrackerSettings(BaseModel):
     recording_channel_password: str = ""
     recording_nickname_prefix: str = "RecBot"
     recording_min_session_seconds: int = 5
+    recording_min_human_count: int = 2
+    recording_stop_grace_seconds: int = 300
 
     @field_validator(
         "server_host",
@@ -63,6 +65,16 @@ class Ts3TrackerSettings(BaseModel):
     @field_validator("recording_min_session_seconds")
     @classmethod
     def validate_recording_min_session(cls, value: int) -> int:
+        return max(0, value)
+
+    @field_validator("recording_min_human_count")
+    @classmethod
+    def validate_recording_min_human_count(cls, value: int) -> int:
+        return max(1, value)
+
+    @field_validator("recording_stop_grace_seconds")
+    @classmethod
+    def validate_recording_stop_grace(cls, value: int) -> int:
         return max(0, value)
 
     @field_validator("query_timeout_seconds")

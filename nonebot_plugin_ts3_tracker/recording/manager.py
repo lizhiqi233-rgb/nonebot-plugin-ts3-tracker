@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from nonebot import logger
@@ -27,6 +27,7 @@ class RecordingManager:
         )
         self._sessions: dict[str, ChannelRecordingSession] = {}
         self._identity_pool: list[str] = []
+        self._pending_stops: dict[str, datetime] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -60,25 +61,59 @@ class RecordingManager:
 
         current_time = now or datetime.now()
         monitored = self._resolve_monitored_channels(status)
-        active_targets = {
-            channel_id
-            for channel_id, channel_name in monitored.items()
-            if self._count_human_users(status, channel_id) > 0
-        }
+        min_humans = self.settings.recording_min_human_count
 
         async with self._lock:
             self._identity_pool = list(self._identities)
 
             for channel_id in list(self._sessions.keys()):
-                if channel_id not in active_targets:
+                if channel_id not in monitored:
+                    self._pending_stops.pop(channel_id, None)
+                    await self._stop_session(channel_id, ended_at=current_time)
+                    continue
+
+                human_count = self._count_human_users(status, channel_id)
+                session = self._sessions[channel_id]
+                session.participant_names = self._participant_names(
+                    status, channel_id
+                )
+
+                if human_count >= min_humans:
+                    if channel_id in self._pending_stops:
+                        logger.info(
+                            "TS3 recording grace cancelled for channel {} ({}), "
+                            "{} human user(s) present",
+                            channel_id,
+                            session.channel_name,
+                            human_count,
+                        )
+                        self._pending_stops.pop(channel_id, None)
+                    continue
+
+                grace_until = self._pending_stops.get(channel_id)
+                if grace_until is None:
+                    grace_seconds = self.settings.recording_stop_grace_seconds
+                    grace_until = current_time + timedelta(seconds=grace_seconds)
+                    self._pending_stops[channel_id] = grace_until
+                    logger.info(
+                        "TS3 recording grace started for channel {} ({}), "
+                        "{} human user(s), stop scheduled at {}",
+                        channel_id,
+                        session.channel_name,
+                        human_count,
+                        grace_until.strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    continue
+
+                if current_time >= grace_until:
+                    self._pending_stops.pop(channel_id, None)
                     await self._stop_session(channel_id, ended_at=current_time)
 
-            for channel_id in sorted(active_targets):
+            for channel_id in sorted(monitored.keys()):
                 if channel_id in self._sessions:
-                    session = self._sessions[channel_id]
-                    session.participant_names = self._participant_names(
-                        status, channel_id
-                    )
+                    continue
+                self._pending_stops.pop(channel_id, None)
+                if self._count_human_users(status, channel_id) < min_humans:
                     continue
                 channel_name = monitored.get(channel_id, "unnamed")
                 await self._start_session(
@@ -90,6 +125,7 @@ class RecordingManager:
 
     async def shutdown(self) -> None:
         async with self._lock:
+            self._pending_stops.clear()
             ended_at = datetime.now()
             for channel_id in list(self._sessions.keys()):
                 await self._stop_session(channel_id, ended_at=ended_at)
