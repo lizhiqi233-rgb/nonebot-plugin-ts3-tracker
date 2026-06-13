@@ -92,7 +92,7 @@ class Ts3TrackerRuntime:
             logger.info(
                 "TS3 频道录音已开启，目标频道：{}，identity 数量：{}。",
                 ",".join(self.settings.get_recording_channels()) or "-",
-                len(self._recording_manager.identity_count),
+                self._recording_manager.identity_count,
             )
         else:
             logger.info("TS3 频道录音已关闭。")
