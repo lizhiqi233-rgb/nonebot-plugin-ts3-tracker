@@ -129,7 +129,12 @@ async fn main() -> Result<()> {
             _ = interval.tick() => {
                 frame.fill(0.0);
                 audio_handler.fill_buffer(&mut frame);
-                write_mono_samples(&mut wav_writer, &frame)?;
+                for chunk in frame.chunks_exact(CHANNELS) {
+                    let mono = (chunk[0] + chunk[1]) * 0.5;
+                    let clipped = mono.clamp(-1.0, 1.0);
+                    let pcm = (clipped * i16::MAX as f32) as i16;
+                    wav_writer.write_sample(pcm)?;
+                }
             }
             item = events.next() => {
                 match item {
@@ -165,19 +170,6 @@ async fn main() -> Result<()> {
         args.channel_id,
         args.output.display()
     );
-    Ok(())
-}
-
-fn write_mono_samples(
-    wav_writer: &mut WavWriter<std::fs::File>,
-    stereo_frame: &[f32],
-) -> Result<()> {
-    for chunk in stereo_frame.chunks_exact(CHANNELS) {
-        let mono = (chunk[0] + chunk[1]) * 0.5;
-        let clipped = mono.clamp(-1.0, 1.0);
-        let pcm = (clipped * i16::MAX as f32) as i16;
-        wav_writer.write_sample(pcm)?;
-    }
     Ok(())
 }
 
