@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures::prelude::*;
 use hound::{SampleFormat, WavSpec, WavWriter};
+use slog::Logger;
 use tokio::time;
 use tracing::{error, info};
 use tsclientlib::audio::AudioHandler;
@@ -106,7 +107,7 @@ async fn main() -> Result<()> {
     let mut wav_writer =
         WavWriter::create(&args.output, spec).context("create wav writer")?;
 
-    let mut audio_handler = AudioHandler::new();
+    let mut audio_handler = AudioHandler::new(Logger::root(slog::Discard, slog::o!()));
     let mut frame = vec![0.0f32; FRAME_SAMPLES];
     let mut interval = time::interval(Duration::from_millis(20));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
