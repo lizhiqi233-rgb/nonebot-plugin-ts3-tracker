@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures::prelude::*;
 use hound::{SampleFormat, WavSpec, WavWriter};
+use slog::Logger;
 use tokio::time;
 use tracing::{error, info, warn};
 use tsclientlib::audio::AudioHandler;
@@ -113,7 +114,7 @@ async fn main() -> Result<()> {
     let mut wav_writer =
         WavWriter::create(&args.output, spec).context("create wav writer")?;
 
-    let mut audio_handler = AudioHandler::new();
+    let mut audio_handler = AudioHandler::new(Logger::root(slog::Discard, slog::o!()));
     let mut frame = vec![0.0f32; FRAME_SAMPLES];
     let mut interval = time::interval(Duration::from_millis(FRAME_MS));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -167,7 +168,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn write_mono_samples(wav_writer: &mut WavWriter, stereo_frame: &[f32]) -> Result<()> {
+fn write_mono_samples(
+    wav_writer: &mut WavWriter<std::fs::File>,
+    stereo_frame: &[f32],
+) -> Result<()> {
     for chunk in stereo_frame.chunks_exact(CHANNELS) {
         let mono = (chunk[0] + chunk[1]) * 0.5;
         let clipped = mono.clamp(-1.0, 1.0);
