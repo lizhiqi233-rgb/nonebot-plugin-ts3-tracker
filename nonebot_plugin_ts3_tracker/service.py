@@ -108,6 +108,8 @@ class Ts3TrackerService:
                 grouped.setdefault(channel_id, {"name": channel_name, "users": []})
 
         for user in status.users:
+            if self.settings.is_recording_bot_nickname(user.nickname):
+                continue
             channel_id = user.channel_id or "__unknown__"
             channel_entry = grouped.setdefault(
                 channel_id,

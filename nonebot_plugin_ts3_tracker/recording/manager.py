@@ -128,23 +128,21 @@ class RecordingManager:
         return resolved
 
     def _count_human_users(self, status: Ts3ServerStatus, channel_id: str) -> int:
-        prefix = self.settings.recording_nickname_prefix.casefold()
         count = 0
         for user in status.users:
             if user.channel_id != channel_id:
                 continue
-            if prefix and user.nickname.casefold().startswith(prefix):
+            if self.settings.is_recording_bot_nickname(user.nickname):
                 continue
             count += 1
         return count
 
     def _participant_names(self, status: Ts3ServerStatus, channel_id: str) -> set[str]:
-        prefix = self.settings.recording_nickname_prefix.casefold()
         names: set[str] = set()
         for user in status.users:
             if user.channel_id != channel_id:
                 continue
-            if prefix and user.nickname.casefold().startswith(prefix):
+            if self.settings.is_recording_bot_nickname(user.nickname):
                 continue
             if user.nickname:
                 names.add(user.nickname)

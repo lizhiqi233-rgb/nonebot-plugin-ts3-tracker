@@ -96,6 +96,12 @@ class Ts3TrackerSettings(BaseModel):
         whitelist = set(self.parse_targets(self.group_whitelist_groups))
         return [group_id for group_id in group_ids if group_id in whitelist]
 
+    def is_recording_bot_nickname(self, nickname: str) -> bool:
+        prefix = self.recording_nickname_prefix.casefold()
+        if not prefix:
+            return False
+        return nickname.casefold().startswith(prefix)
+
 
 class Config(BaseModel):
     ts3_tracker: Ts3TrackerSettings = Ts3TrackerSettings()

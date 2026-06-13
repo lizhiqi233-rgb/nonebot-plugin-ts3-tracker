@@ -182,6 +182,8 @@ class Ts3TrackerRuntime:
         snapshots: dict[str, TrackedClientSnapshot] = {}
         now_text = self._format_now()
         for user in status.users:
+            if self.settings.is_recording_bot_nickname(user.nickname):
+                continue
             key = self._user_key(user)
             previous = self._snapshot.get(key)
             snapshots[key] = TrackedClientSnapshot(
@@ -270,7 +272,7 @@ class Ts3TrackerRuntime:
             lines.append(f"🟢 上线时间：{snapshot.first_seen_at or self._format_now()}")
             lines.append(f"🔴 下线时间：{self._format_now()}")
             lines.append(f"⏱️ 在线时长：{duration_text}")
-        lines.append(f"👥 当前在线人数：{status.online_count}")
+        lines.append(f"👥 当前在线人数：{self._count_broadcast_users(status)}")
         lines.append(f"📜 在线列表：{self._format_online_list(status)}")
         return "\n".join(lines)
 
@@ -373,9 +375,21 @@ class Ts3TrackerRuntime:
         return self._format_duration(snapshot.connected_duration_seconds)
 
     def _format_online_list(self, status: Ts3ServerStatus) -> str:
-        if not status.users:
+        users = [
+            user
+            for user in status.users
+            if not self.settings.is_recording_bot_nickname(user.nickname)
+        ]
+        if not users:
             return "暂无在线用户"
-        return ", ".join(user.nickname for user in status.users)
+        return ", ".join(user.nickname for user in users)
+
+    def _count_broadcast_users(self, status: Ts3ServerStatus) -> int:
+        return sum(
+            1
+            for user in status.users
+            if not self.settings.is_recording_bot_nickname(user.nickname)
+        )
 
     def build_recording_status_message(self) -> str:
         channels = self.settings.get_recording_channels()
