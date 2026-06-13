@@ -58,9 +58,10 @@ async fn main() -> Result<()> {
 
     let identity = load_identity(&args.identity)?;
     let address = format!("{}:{}", args.host, args.port);
+    let nickname = args.nickname.clone();
     let mut builder = Connection::build(address)
         .identity(identity)
-        .name(&args.nickname)
+        .name(nickname)
         .channel_id(ChannelId(args.channel_id));
     if !args.password.is_empty() {
         builder = builder.password(&args.password);
@@ -151,8 +152,8 @@ async fn main() -> Result<()> {
     wav_writer
         .finalize()
         .context("finalize wav writer")?;
+    drop(events);
     connection.disconnect(DisconnectOptions::new())?;
-    let _ = events.next().await;
 
     eprintln!(
         "DONE channel_id={} output={}",
