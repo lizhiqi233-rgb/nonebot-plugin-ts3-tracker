@@ -39,7 +39,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 ignore = ["B008", "E501", "RUF001"]
 
 [tool.setuptools]
-packages = ["nonebot_plugin_ts3_tracker", "onebot_plugin_ts3_tracker", "ts3_tracker_shared"]
+packages = ["nonebot_plugin_ts3_tracker"]
 
 [build-system]
 requires = ["setuptools>=69.0", "wheel"]

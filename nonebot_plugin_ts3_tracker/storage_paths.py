@@ -10,6 +10,7 @@ import nonebot_plugin_localstore as store
 from .config import Ts3TrackerSettings
 
 RECORDINGS_DIR_NAME = "recordings"
+SLICES_DIR_NAME = "slices"
 IDENTITIES_DIR_NAME = "identities"
 
 
@@ -29,6 +30,10 @@ def resolve_recordings_dir(settings: Ts3TrackerSettings) -> Path:
     return get_plugin_data_root(settings) / RECORDINGS_DIR_NAME
 
 
+def resolve_slices_dir(settings: Ts3TrackerSettings) -> Path:
+    return get_plugin_data_root(settings) / SLICES_DIR_NAME
+
+
 def resolve_identities_dir() -> Path:
     return get_plugin_config_root() / IDENTITIES_DIR_NAME
 
@@ -36,4 +41,5 @@ def resolve_identities_dir() -> Path:
 def ensure_storage_layout(settings: Ts3TrackerSettings) -> None:
     get_plugin_data_root(settings).mkdir(parents=True, exist_ok=True)
     resolve_recordings_dir(settings).mkdir(parents=True, exist_ok=True)
+    resolve_slices_dir(settings).mkdir(parents=True, exist_ok=True)
     resolve_identities_dir().mkdir(parents=True, exist_ok=True)

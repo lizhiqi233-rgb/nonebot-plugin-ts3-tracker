@@ -10,6 +10,8 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
 
 from .config import Config
+from .recording.commands import parse_record_command_args, parse_stop_record_command_args
+from .recording.slice import parse_slice_command_args
 from .runtime import Ts3TrackerRuntime
 from .service import Ts3TrackerService
 
@@ -28,6 +30,9 @@ __plugin_meta__ = PluginMetadata(
         "/tsnotify on：开启本群进退服通知\n"
         "/tsnotify off：关闭本群进退服通知\n"
         "/tsrecord：查看频道录音状态\n"
+        "/ts 切片 [分钟数] [频道]：截取进行中录音的最近片段（默认分钟数见配置）\n"
+        "/ts 录制 [频道]：手动启动测试录音（忽略最低人数，轮询不会自动停录）\n"
+        "/ts 停止录制 [频道]：停止进行中的录音\n"
         "可选：配置 command_prefix_required=false 后，可直接发送上号/ts/tsinfo\n\n"
         "可选：开启轮询后发送 TS3 进服/退服通知（notification_push_mode=join_only 时仅进服；换频道不通知）\n"
         "可选：recording_enabled=true 后，对 recording_channels 中有人频道自动录音"
@@ -110,6 +115,98 @@ async def _handle_notify_switch(
     return await finish("本群 TS3 进退服通知已经是关闭状态。")
 
 
+async def _handle_slice(
+    event: MessageEvent,
+    arg_text: str,
+    *,
+    finish: Callable[[str], Awaitable[None]],
+) -> None:
+    denied_message = _ensure_group_allowed(event)
+    if denied_message is not None:
+        return await finish(denied_message)
+
+    if not plugin_config.recording_enabled:
+        return await finish(
+            "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+        )
+
+    parsed = parse_slice_command_args(
+        arg_text,
+        default_minutes=plugin_config.recording_slice_default_minutes,
+    )
+    if isinstance(parsed, str):
+        return await finish(parsed)
+
+    duration_minutes, channel = parsed
+    if duration_minutes <= 0:
+        return await finish("切片分钟数必须是正整数。")
+
+    group_id = getattr(event, "group_id", None)
+    logger.info(
+        "群号 {} 请求 TS3 录音切片，分钟数 {}，频道 {}。",
+        group_id if group_id is not None else event.get_session_id(),
+        duration_minutes,
+        channel or "全部",
+    )
+    message = await runtime.slice_recordings(
+        duration_minutes=duration_minutes,
+        channel=channel,
+    )
+    return await finish(message)
+
+
+async def _handle_record(
+    event: MessageEvent,
+    arg_text: str,
+    *,
+    finish: Callable[[str], Awaitable[None]],
+) -> None:
+    denied_message = _ensure_group_allowed(event)
+    if denied_message is not None:
+        return await finish(denied_message)
+
+    if not plugin_config.recording_enabled:
+        return await finish(
+            "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+        )
+
+    channel = parse_record_command_args(arg_text)
+    group_id = getattr(event, "group_id", None)
+    logger.info(
+        "群号 {} 请求 TS3 测试录音，频道 {}。",
+        group_id if group_id is not None else event.get_session_id(),
+        channel or "全部",
+    )
+    message = await runtime.force_start_recordings(channel=channel)
+    return await finish(message)
+
+
+async def _handle_stop_record(
+    event: MessageEvent,
+    arg_text: str,
+    *,
+    finish: Callable[[str], Awaitable[None]],
+) -> None:
+    denied_message = _ensure_group_allowed(event)
+    if denied_message is not None:
+        return await finish(denied_message)
+
+    if not plugin_config.recording_enabled:
+        return await finish(
+            "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+        )
+
+    channel = parse_stop_record_command_args(arg_text)
+    group_id = getattr(event, "group_id", None)
+    logger.info(
+        "群号 {} 请求停止 TS3 录音，频道 {}。",
+        group_id if group_id is not None else event.get_session_id(),
+        channel or "全部",
+    )
+    message = await runtime.stop_recordings(channel=channel)
+    return await finish(message)
+
+
 ts3_status = on_command(
     "上号",
     aliases={"ts"},
@@ -143,6 +240,30 @@ ts3_plain_status = on_regex(
     block=True,
 )
 
+ts3_plain_slice = on_regex(
+    r"^(?:上号|ts)\s+切片(?:\s+(?P<args>.+))?$",
+    flags=re.IGNORECASE,
+    rule=Rule(_plain_command_enabled),
+    priority=MATCHER_PRIORITY,
+    block=True,
+)
+
+ts3_plain_record = on_regex(
+    r"^(?:上号|ts)\s+录制(?:\s+(?P<args>.+))?$",
+    flags=re.IGNORECASE,
+    rule=Rule(_plain_command_enabled),
+    priority=MATCHER_PRIORITY,
+    block=True,
+)
+
+ts3_plain_stop_record = on_regex(
+    r"^(?:上号|ts)\s+停止录制(?:\s+(?P<args>.+))?$",
+    flags=re.IGNORECASE,
+    rule=Rule(_plain_command_enabled),
+    priority=MATCHER_PRIORITY,
+    block=True,
+)
+
 ts3_plain_status_info = on_regex(
     r"^tsinfo$",
     flags=re.IGNORECASE,
@@ -161,7 +282,19 @@ ts3_plain_notify = on_regex(
 
 
 @ts3_status.handle()
-async def handle_ts3_status(event: MessageEvent) -> None:
+async def handle_ts3_status(event: MessageEvent, arg: Message = CommandArg()) -> None:
+    arg_text = arg.extract_plain_text().strip()
+    if arg_text.startswith("切片"):
+        return await _handle_slice(event, arg_text, finish=ts3_status.finish)
+    if arg_text.startswith("停止录制"):
+        return await _handle_stop_record(event, arg_text, finish=ts3_status.finish)
+    if arg_text.startswith("录制"):
+        return await _handle_record(event, arg_text, finish=ts3_status.finish)
+    if arg_text:
+        return await ts3_status.finish(
+            "未知子命令。可用：/ts、/ts 切片 [分钟数] [频道]、"
+            "/ts 录制 [频道]、/ts 停止录制 [频道]"
+        )
     await _handle_query(event, detailed=False, finish=ts3_status.finish)
 
 
@@ -173,6 +306,48 @@ async def handle_ts3_status_info(event: MessageEvent) -> None:
 @ts3_plain_status.handle()
 async def handle_ts3_plain_status(event: MessageEvent) -> None:
     await _handle_query(event, detailed=False, finish=ts3_plain_status.finish)
+
+
+@ts3_plain_slice.handle()
+async def handle_ts3_plain_slice(event: MessageEvent) -> None:
+    match = event.get_plaintext().strip()
+    args_match = re.match(
+        r"^(?:上号|ts)\s+切片(?:\s+(?P<args>.+))?$",
+        match,
+        flags=re.IGNORECASE,
+    )
+    arg_text = "切片"
+    if args_match and args_match.group("args"):
+        arg_text = f"切片 {args_match.group('args').strip()}"
+    await _handle_slice(event, arg_text, finish=ts3_plain_slice.finish)
+
+
+@ts3_plain_record.handle()
+async def handle_ts3_plain_record(event: MessageEvent) -> None:
+    match = event.get_plaintext().strip()
+    args_match = re.match(
+        r"^(?:上号|ts)\s+录制(?:\s+(?P<args>.+))?$",
+        match,
+        flags=re.IGNORECASE,
+    )
+    arg_text = "录制"
+    if args_match and args_match.group("args"):
+        arg_text = f"录制 {args_match.group('args').strip()}"
+    await _handle_record(event, arg_text, finish=ts3_plain_record.finish)
+
+
+@ts3_plain_stop_record.handle()
+async def handle_ts3_plain_stop_record(event: MessageEvent) -> None:
+    match = event.get_plaintext().strip()
+    args_match = re.match(
+        r"^(?:上号|ts)\s+停止录制(?:\s+(?P<args>.+))?$",
+        match,
+        flags=re.IGNORECASE,
+    )
+    arg_text = "停止录制"
+    if args_match and args_match.group("args"):
+        arg_text = f"停止录制 {args_match.group('args').strip()}"
+    await _handle_stop_record(event, arg_text, finish=ts3_plain_stop_record.finish)
 
 
 @ts3_plain_status_info.handle()

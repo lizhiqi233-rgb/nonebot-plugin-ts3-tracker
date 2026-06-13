@@ -8,10 +8,17 @@ from nonebot import logger
 
 from ..config import Ts3TrackerSettings
 from ..models import Ts3ServerStatus
-from ..storage_paths import resolve_identities_dir, resolve_recordings_dir
-from .paths import build_session_paths
+from ..storage_paths import resolve_identities_dir, resolve_recordings_dir, resolve_slices_dir
+from .paths import build_session_paths, build_slice_paths
 from .session import ChannelRecordingSession
 from .sidecar import SidecarLauncher, resolve_identity_entries, resolve_sidecar_path
+from .slice import (
+    SliceError,
+    SliceResult,
+    session_matches_channel_filter,
+    slice_wav_tail,
+    write_slice_metadata,
+)
 
 
 class RecordingManager:
@@ -26,6 +33,7 @@ class RecordingManager:
             settings.recording_identities, self._identities_dir
         )
         self._sessions: dict[str, ChannelRecordingSession] = {}
+        self._test_sessions: set[str] = set()
         self._identity_pool: list[str] = []
         self._pending_stops: dict[str, datetime] = {}
         self._lock = asyncio.Lock()
@@ -40,6 +48,9 @@ class RecordingManager:
 
     def get_active_sessions(self) -> list[ChannelRecordingSession]:
         return list(self._sessions.values())
+
+    def is_test_session(self, channel_id: str) -> bool:
+        return channel_id in self._test_sessions
 
     async def sync(self, status: Ts3ServerStatus, *, now: datetime | None = None) -> None:
         if not self.is_enabled:
@@ -64,7 +75,7 @@ class RecordingManager:
         min_humans = self.settings.recording_min_human_count
 
         async with self._lock:
-            self._identity_pool = list(self._identities)
+            self._refresh_identity_pool()
 
             for channel_id in list(self._sessions.keys()):
                 if channel_id not in monitored:
@@ -77,6 +88,9 @@ class RecordingManager:
                 session.participant_names = self._participant_names(
                     status, channel_id
                 )
+
+                if channel_id in self._test_sessions:
+                    continue
 
                 if human_count >= min_humans:
                     if channel_id in self._pending_stops:
@@ -129,6 +143,225 @@ class RecordingManager:
             ended_at = datetime.now()
             for channel_id in list(self._sessions.keys()):
                 await self._stop_session(channel_id, ended_at=ended_at)
+
+    async def slice_active_sessions(
+        self,
+        *,
+        duration_minutes: int,
+        channel_filter: str | None = None,
+        triggered_at: datetime | None = None,
+    ) -> tuple[list[SliceResult], list[str]]:
+        if not self.is_enabled:
+            return [], ["当前未开启 TS3 频道录音。"]
+
+        current_time = triggered_at or datetime.now()
+        duration_seconds = duration_minutes * 60
+        slices_dir = resolve_slices_dir(self.settings)
+
+        async with self._lock:
+            sessions = list(self._sessions.values())
+
+        if not sessions:
+            return [], ["当前没有进行中的录音可切片。"]
+
+        if channel_filter is not None:
+            sessions = [
+                session
+                for session in sessions
+                if session_matches_channel_filter(
+                    channel_id=session.channel_id,
+                    channel_name=session.channel_name,
+                    channel_filter=channel_filter,
+                )
+            ]
+            if not sessions:
+                active = ", ".join(
+                    f"{item.channel_name}({item.channel_id})"
+                    for item in self._sessions.values()
+                )
+                return [], [
+                    f"未找到匹配的进行中录音频道：{channel_filter}。当前录音：{active}"
+                ]
+
+        results: list[SliceResult] = []
+        errors: list[str] = []
+        for session in sessions:
+            wav_path, metadata_path = build_slice_paths(
+                slices_dir,
+                session.channel_id,
+                session.channel_name,
+                current_time,
+                duration_minutes,
+            )
+            try:
+                actual_seconds = await asyncio.to_thread(
+                    slice_wav_tail,
+                    session.wav_path,
+                    wav_path,
+                    duration_seconds=duration_seconds,
+                )
+            except SliceError as exc:
+                errors.append(
+                    f"{session.channel_name} ({session.channel_id})：{exc}"
+                )
+                continue
+
+            result = SliceResult(
+                channel_id=session.channel_id,
+                channel_name=session.channel_name,
+                source_path=session.wav_path,
+                output_path=wav_path,
+                metadata_path=metadata_path,
+                requested_seconds=duration_seconds,
+                actual_seconds=actual_seconds,
+                participant_names=set(session.participant_names),
+            )
+            await asyncio.to_thread(
+                write_slice_metadata,
+                result,
+                triggered_at=current_time,
+            )
+            results.append(result)
+            logger.info(
+                "TS3 recording slice saved for channel {} ({}), {:.0f}s -> {}",
+                session.channel_id,
+                session.channel_name,
+                actual_seconds,
+                wav_path,
+            )
+
+        return results, errors
+
+    async def force_start_sessions(
+        self,
+        status: Ts3ServerStatus,
+        *,
+        channel_filter: str | None = None,
+        started_at: datetime | None = None,
+    ) -> tuple[list[ChannelRecordingSession], list[str]]:
+        if not self.is_enabled:
+            return [], ["当前未开启 TS3 频道录音。"]
+
+        missing = self._missing_recording_config()
+        if missing:
+            return [], ["TS3 录音配置不完整：" + "、".join(missing)]
+
+        if not self._launcher.is_available:
+            return [], [
+                "未找到 recorder sidecar 二进制，请先编译或配置 TS3_TRACKER__RECORDING_SIDECAR_PATH。"
+            ]
+
+        current_time = started_at or datetime.now()
+        monitored = self._resolve_monitored_channels(status)
+        if not monitored:
+            return [], ["未解析到可录制的监控频道，请检查 TS3_TRACKER__RECORDING_CHANNELS。"]
+
+        targets = dict(monitored)
+        if channel_filter is not None:
+            targets = {
+                channel_id: channel_name
+                for channel_id, channel_name in monitored.items()
+                if session_matches_channel_filter(
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    channel_filter=channel_filter,
+                )
+            }
+            if not targets:
+                configured = ", ".join(
+                    f"{name}({channel_id})" for channel_id, name in monitored.items()
+                )
+                return [], [
+                    f"未找到匹配的监控频道：{channel_filter}。可录制频道：{configured}"
+                ]
+
+        started: list[ChannelRecordingSession] = []
+        messages: list[str] = []
+
+        async with self._lock:
+            self._refresh_identity_pool()
+            for channel_id in sorted(targets.keys()):
+                channel_name = targets[channel_id]
+                if channel_id in self._sessions:
+                    messages.append(f"{channel_name} ({channel_id}) 已在录音中。")
+                    continue
+
+                self._pending_stops.pop(channel_id, None)
+                self._test_sessions.add(channel_id)
+                await self._start_session(
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    status=status,
+                    started_at=current_time,
+                )
+                session = self._sessions.get(channel_id)
+                if session is None:
+                    self._test_sessions.discard(channel_id)
+                    messages.append(
+                        f"{channel_name} ({channel_id}) 启动失败，请查看 NoneBot 日志。"
+                    )
+                    continue
+
+                started.append(session)
+                logger.info(
+                    "TS3 manual test recording started for channel {} ({}) -> {}",
+                    channel_id,
+                    channel_name,
+                    session.wav_path,
+                )
+
+        return started, messages
+
+    async def stop_active_sessions(
+        self,
+        *,
+        channel_filter: str | None = None,
+        ended_at: datetime | None = None,
+    ) -> tuple[list[tuple[ChannelRecordingSession, bool]], list[str]]:
+        if not self.is_enabled:
+            return [], ["当前未开启 TS3 频道录音。"]
+
+        current_time = ended_at or datetime.now()
+
+        async with self._lock:
+            sessions = list(self._sessions.values())
+            if not sessions:
+                return [], ["当前没有进行中的录音。"]
+
+            if channel_filter is not None:
+                sessions = [
+                    session
+                    for session in sessions
+                    if session_matches_channel_filter(
+                        channel_id=session.channel_id,
+                        channel_name=session.channel_name,
+                        channel_filter=channel_filter,
+                    )
+                ]
+                if not sessions:
+                    active = ", ".join(
+                        f"{item.channel_name}({item.channel_id})"
+                        for item in self._sessions.values()
+                    )
+                    return [], [
+                        f"未找到匹配的进行中录音频道：{channel_filter}。当前录音：{active}"
+                    ]
+
+            stopped: list[tuple[ChannelRecordingSession, bool]] = []
+            for session in sessions:
+                if session.channel_id not in self._sessions:
+                    continue
+                was_test = session.channel_id in self._test_sessions
+                self._pending_stops.pop(session.channel_id, None)
+                stopped.append((session, was_test))
+                await self._stop_session(session.channel_id, ended_at=current_time)
+                logger.info(
+                    "TS3 recording stopped manually for channel {} ({})",
+                    session.channel_id,
+                    session.channel_name,
+                )
+
+        return stopped, []
 
     def _missing_recording_config(self) -> list[str]:
         missing: list[str] = []
@@ -185,6 +418,12 @@ class RecordingManager:
             if user.nickname:
                 names.add(user.nickname)
         return names
+
+    def _refresh_identity_pool(self) -> None:
+        in_use = {session.identity for session in self._sessions.values()}
+        self._identity_pool = [
+            identity for identity in self._identities if identity not in in_use
+        ]
 
     def _take_identity(self) -> str | None:
         if not self._identity_pool:
@@ -248,6 +487,7 @@ class RecordingManager:
         )
 
     async def _stop_session(self, channel_id: str, *, ended_at: datetime) -> None:
+        self._test_sessions.discard(channel_id)
         session = self._sessions.pop(channel_id, None)
         if session is None:
             return

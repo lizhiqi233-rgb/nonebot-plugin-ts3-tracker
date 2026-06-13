@@ -14,13 +14,26 @@ def sanitize_channel_name(name: str) -> str:
     return cleaned or "unnamed"
 
 
-def build_channel_directory(output_dir: Path, channel_id: str, channel_name: str) -> Path:
+def build_channel_segment(channel_id: str, channel_name: str) -> str:
     safe_name = sanitize_channel_name(channel_name)
-    return output_dir / f"{channel_id}_{safe_name}"
+    return f"{channel_id}_{safe_name}"
 
 
-def build_session_filename(started_at: datetime) -> str:
-    return started_at.strftime("%Y-%m-%d_%H%M%S.wav")
+def build_dated_audio_paths(
+    root_dir: Path,
+    channel_id: str,
+    channel_name: str,
+    moment: datetime,
+    filename: str,
+) -> tuple[Path, Path]:
+    target_dir = (
+        root_dir
+        / moment.strftime("%Y-%m-%d")
+        / build_channel_segment(channel_id, channel_name)
+    )
+    wav_path = target_dir / filename
+    meta_path = wav_path.with_suffix(".json")
+    return wav_path, meta_path
 
 
 def build_session_paths(
@@ -29,7 +42,29 @@ def build_session_paths(
     channel_name: str,
     started_at: datetime,
 ) -> tuple[Path, Path]:
-    channel_dir = build_channel_directory(output_dir, channel_id, channel_name)
-    wav_path = channel_dir / build_session_filename(started_at)
-    meta_path = wav_path.with_suffix(".json")
-    return wav_path, meta_path
+    filename = f"{started_at.strftime('%H%M%S')}.wav"
+    return build_dated_audio_paths(
+        output_dir,
+        channel_id,
+        channel_name,
+        started_at,
+        filename,
+    )
+
+
+def build_slice_paths(
+    slices_dir: Path,
+    channel_id: str,
+    channel_name: str,
+    triggered_at: datetime,
+    duration_minutes: int,
+) -> tuple[Path, Path]:
+    time_part = triggered_at.strftime("%H%M%S")
+    filename = f"{time_part}_slice_{duration_minutes}m.wav"
+    return build_dated_audio_paths(
+        slices_dir,
+        channel_id,
+        channel_name,
+        triggered_at,
+        filename,
+    )

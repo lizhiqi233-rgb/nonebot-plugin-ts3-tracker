@@ -18,6 +18,7 @@ from .storage_paths import (
     ensure_storage_layout,
     resolve_identities_dir,
     resolve_recordings_dir,
+    resolve_slices_dir,
 )
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
@@ -407,6 +408,7 @@ class Ts3TrackerRuntime:
             f"监控频道：{', '.join(channels) if channels else '-'}",
             f"可用 identity：{self._recording_manager.identity_count}",
             f"录音目录：{resolve_recordings_dir(self.settings)}",
+            f"切片目录：{resolve_slices_dir(self.settings)}",
             f"identity 目录：{resolve_identities_dir()}",
         ]
         if not sessions:
@@ -414,9 +416,114 @@ class Ts3TrackerRuntime:
         else:
             lines.append("进行中的录音：")
             for session in sessions:
-                lines.append(
-                    f"- {session.channel_name} ({session.channel_id}) -> {session.wav_path.name}"
+                test_tag = (
+                    " [测试]"
+                    if self._recording_manager.is_test_session(session.channel_id)
+                    else ""
                 )
+                lines.append(
+                    f"- {session.channel_name} ({session.channel_id}){test_tag} -> "
+                    f"{session.wav_path.name}"
+                )
+        return "\n".join(lines)
+
+    async def force_start_recordings(self, *, channel: str | None = None) -> str:
+        if not self.settings.recording_enabled:
+            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+
+        missing_fields = self.service.get_missing_required_fields()
+        if missing_fields:
+            return "TS3 配置不完整，请先填写：" + "、".join(missing_fields)
+
+        try:
+            status = await self.service.fetch_status()
+        except Exception as exc:
+            logger.warning("TS3 force record failed to fetch status: {}", exc)
+            return f"TS3 查询失败，无法启动测试录音：{exc}"
+
+        started, messages = await self._recording_manager.force_start_sessions(
+            status,
+            channel_filter=channel,
+            started_at=self._now_factory(),
+        )
+        if not started and messages:
+            return "\n".join(messages)
+
+        lines = ["TS3 测试录音已启动（不受最低人数限制，轮询不会自动停录）："]
+        for session in started:
+            lines.append(
+                f"- {session.channel_name} ({session.channel_id}) -> {session.wav_path}"
+            )
+        lines.extend(messages)
+        return "\n".join(lines)
+
+    async def stop_recordings(self, *, channel: str | None = None) -> str:
+        if not self.settings.recording_enabled:
+            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+
+        stopped, messages = await self._recording_manager.stop_active_sessions(
+            channel_filter=channel,
+            ended_at=self._now_factory(),
+        )
+        if not stopped and messages:
+            return "\n".join(messages)
+
+        lines = ["TS3 录音已停止："]
+        for session, was_test in stopped:
+            test_tag = " [测试]" if was_test else ""
+            lines.append(
+                f"- {session.channel_name} ({session.channel_id}){test_tag} -> "
+                f"{session.wav_path}"
+            )
+        lines.extend(messages)
+        note = (
+            "说明：非测试录音若在停录后仍满足最低人数，下一轮轮询可能自动重新开始。"
+        )
+        if stopped:
+            lines.append(note)
+        return "\n".join(lines)
+
+    async def slice_recordings(
+        self,
+        *,
+        duration_minutes: int | None = None,
+        channel: str | None = None,
+    ) -> str:
+        if not self.settings.recording_enabled:
+            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
+
+        minutes = (
+            duration_minutes
+            if duration_minutes is not None
+            else self.settings.recording_slice_default_minutes
+        )
+        if minutes <= 0:
+            return "切片分钟数必须是正整数。"
+
+        results, errors = await self._recording_manager.slice_active_sessions(
+            duration_minutes=minutes,
+            channel_filter=channel,
+            triggered_at=self._now_factory(),
+        )
+        if not results and errors:
+            return "\n".join(errors)
+
+        lines = [
+            f"TS3 录音切片完成（请求最近 {minutes} 分钟）",
+            f"切片目录：{resolve_slices_dir(self.settings)}",
+        ]
+        for result in results:
+            actual_text = self._format_duration(int(result.actual_seconds))
+            requested_text = self._format_duration(result.requested_seconds)
+            if int(result.actual_seconds) < result.requested_seconds:
+                duration_note = f"实际 {actual_text}（可用内容不足 {requested_text}）"
+            else:
+                duration_note = f"时长 {actual_text}"
+            lines.append(
+                f"- {result.channel_name} ({result.channel_id})："
+                f"{duration_note} -> {result.output_path}"
+            )
+        lines.extend(errors)
         return "\n".join(lines)
 
     def get_online_duration_seconds(self, user: Ts3OnlineUser) -> int | None:

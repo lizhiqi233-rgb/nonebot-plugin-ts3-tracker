@@ -35,6 +35,7 @@ class Ts3TrackerSettings(BaseModel):
     recording_min_session_seconds: int = 5
     recording_min_human_count: int = 2
     recording_stop_grace_seconds: int = 300
+    recording_slice_default_minutes: int = 5
 
     @field_validator(
         "server_host",
@@ -76,6 +77,11 @@ class Ts3TrackerSettings(BaseModel):
     @classmethod
     def validate_recording_stop_grace(cls, value: int) -> int:
         return max(0, value)
+
+    @field_validator("recording_slice_default_minutes")
+    @classmethod
+    def validate_recording_slice_default_minutes(cls, value: int) -> int:
+        return max(1, value)
 
     @field_validator("query_timeout_seconds")
     @classmethod

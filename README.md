@@ -172,12 +172,24 @@ identity 文件默认放在 NoneBot 配置目录下插件对应文件夹：
 
 ### 文件布局
 
-录音默认写入 NoneBot 数据目录下插件对应文件夹：
+录音与切片默认均位于插件 **data** 目录下，内部按 `日期 / 频道 / 时间` 划分：
 
 ```text
-{data_dir}/nonebot_plugin_ts3_tracker/recordings/{channel_id}_{channel_name}/2026-06-13_143052.wav
-{data_dir}/nonebot_plugin_ts3_tracker/recordings/{channel_id}_{channel_name}/2026-06-13_143052.json
+{data_dir}/nonebot_plugin_ts3_tracker/recordings/{YYYY-MM-DD}/{channel_id}_{channel_name}/{HHMMSS}.wav
+{data_dir}/nonebot_plugin_ts3_tracker/recordings/{YYYY-MM-DD}/{channel_id}_{channel_name}/{HHMMSS}.json
+
+{data_dir}/nonebot_plugin_ts3_tracker/slices/{YYYY-MM-DD}/{channel_id}_{channel_name}/{HHMMSS}_slice_{minutes}m.wav
+{data_dir}/nonebot_plugin_ts3_tracker/slices/{YYYY-MM-DD}/{channel_id}_{channel_name}/{HHMMSS}_slice_{minutes}m.json
 ```
+
+示例：
+
+```text
+.../recordings/2026-06-13/5_Lobby/143052.wav
+.../slices/2026-06-13/5_Lobby/150000_slice_5m.wav
+```
+
+若设置了 `TS3_TRACKER__RECORDING_OUTPUT_DIR`，完整录音根目录可自定义，但切片仍默认写入插件 data 目录下的 `slices/`（布局相同）。
 
 可用 `nb localstore` 查看当前机器人的实际 `{data_dir}` 与 `{config_dir}`。
 
@@ -277,7 +289,8 @@ APEX: TEST(42秒)
 | 位置 | 内容 |
 | --- | --- |
 | 插件数据目录 | `snapshot.json`、`group_notify.json` |
-| 插件数据目录 `recordings/` | 频道录音 WAV 与 metadata |
+| 插件数据目录 `recordings/` | 完整会话录音（`日期/频道/时间`） |
+| 插件数据目录 `slices/` | 手动切片（布局同上） |
 | 插件配置目录 `identities/` | TS voice identity 文件 |
 
 若设置了 `TS3_TRACKER__DATA_DIR`，则作为插件数据根目录（快照与默认录音目录均在其下）。
