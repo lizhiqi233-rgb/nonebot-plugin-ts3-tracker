@@ -11,6 +11,7 @@ from nonebot.rule import Rule
 
 from .config import Config
 from .recording.commands import parse_record_command_args, parse_stop_record_command_args
+from .recording.retention import parse_cleanup_command_args
 from .recording.slice import parse_slice_command_args
 from .runtime import Ts3TrackerRuntime
 from .service import Ts3TrackerService
@@ -33,9 +34,11 @@ __plugin_meta__ = PluginMetadata(
         "/ts 切片 [分钟数] [频道]：截取进行中录音的最近片段（默认分钟数见配置）\n"
         "/ts 录制 [频道]：手动启动测试录音（忽略最低人数，轮询不会自动停录）\n"
         "/ts 停止录制 [频道]：停止进行中的录音\n"
+        "/ts 清理 [录音|切片]：按保留策略立即清理过期录音文件\n"
         "可选：配置 command_prefix_required=false 后，可直接发送上号/ts/tsinfo\n\n"
         "可选：开启轮询后发送 TS3 进服/退服通知（notification_push_mode=join_only 时仅进服；换频道不通知）\n"
-        "可选：recording_enabled=true 后，对 recording_channels 中有人频道自动录音"
+        "可选：recording_enabled=true 后，对 recording_channels 中有人频道自动录音\n"
+        "可选：recording_retention_days / recording_slice_retention_days 开启过期录音定时清理"
     ),
     type="application",
     homepage="https://github.com/moeneri/nonebot-plugin-ts3-tracker",
@@ -155,6 +158,30 @@ async def _handle_slice(
     return await finish(message)
 
 
+async def _handle_cleanup(
+    event: MessageEvent,
+    arg_text: str,
+    *,
+    finish: Callable[[str], Awaitable[None]],
+) -> None:
+    denied_message = _ensure_group_allowed(event)
+    if denied_message is not None:
+        return await finish(denied_message)
+
+    parsed = parse_cleanup_command_args(arg_text)
+    if isinstance(parsed, str):
+        return await finish(parsed)
+
+    group_id = getattr(event, "group_id", None)
+    logger.info(
+        "群号 {} 请求 TS3 录音文件清理，目标 {}。",
+        group_id if group_id is not None else event.get_session_id(),
+        parsed.value,
+    )
+    message = await runtime.cleanup_recordings_manual(target=parsed)
+    return await finish(message)
+
+
 async def _handle_record(
     event: MessageEvent,
     arg_text: str,
@@ -264,6 +291,14 @@ ts3_plain_stop_record = on_regex(
     block=True,
 )
 
+ts3_plain_cleanup = on_regex(
+    r"^(?:上号|ts)\s+清理(?:\s+(?P<args>.+))?$",
+    flags=re.IGNORECASE,
+    rule=Rule(_plain_command_enabled),
+    priority=MATCHER_PRIORITY,
+    block=True,
+)
+
 ts3_plain_status_info = on_regex(
     r"^tsinfo$",
     flags=re.IGNORECASE,
@@ -288,12 +323,14 @@ async def handle_ts3_status(event: MessageEvent, arg: Message = CommandArg()) ->
         return await _handle_slice(event, arg_text, finish=ts3_status.finish)
     if arg_text.startswith("停止录制"):
         return await _handle_stop_record(event, arg_text, finish=ts3_status.finish)
+    if arg_text.startswith("清理"):
+        return await _handle_cleanup(event, arg_text, finish=ts3_status.finish)
     if arg_text.startswith("录制"):
         return await _handle_record(event, arg_text, finish=ts3_status.finish)
     if arg_text:
         return await ts3_status.finish(
             "未知子命令。可用：/ts、/ts 切片 [分钟数] [频道]、"
-            "/ts 录制 [频道]、/ts 停止录制 [频道]"
+            "/ts 录制 [频道]、/ts 停止录制 [频道]、/ts 清理 [录音|切片]"
         )
     await _handle_query(event, detailed=False, finish=ts3_status.finish)
 
@@ -348,6 +385,20 @@ async def handle_ts3_plain_stop_record(event: MessageEvent) -> None:
     if args_match and args_match.group("args"):
         arg_text = f"停止录制 {args_match.group('args').strip()}"
     await _handle_stop_record(event, arg_text, finish=ts3_plain_stop_record.finish)
+
+
+@ts3_plain_cleanup.handle()
+async def handle_ts3_plain_cleanup(event: MessageEvent) -> None:
+    match = event.get_plaintext().strip()
+    args_match = re.match(
+        r"^(?:上号|ts)\s+清理(?:\s+(?P<args>.+))?$",
+        match,
+        flags=re.IGNORECASE,
+    )
+    arg_text = "清理"
+    if args_match and args_match.group("args"):
+        arg_text = f"清理 {args_match.group('args').strip()}"
+    await _handle_cleanup(event, arg_text, finish=ts3_plain_cleanup.finish)
 
 
 @ts3_plain_status_info.handle()

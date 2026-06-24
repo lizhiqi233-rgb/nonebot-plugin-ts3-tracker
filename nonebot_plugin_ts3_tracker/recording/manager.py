@@ -10,6 +10,12 @@ from ..config import Ts3TrackerSettings
 from ..models import Ts3ServerStatus
 from ..storage_paths import resolve_identities_dir, resolve_recordings_dir, resolve_slices_dir
 from .paths import build_session_paths, build_slice_paths
+from .retention import (
+    RetentionCleanupResult,
+    RetentionTarget,
+    build_protection_snapshot,
+    run_retention_cleanup,
+)
 from .session import ChannelRecordingSession
 from .sidecar import SidecarLauncher, resolve_identity_entries, resolve_sidecar_path
 from .slice import (
@@ -363,6 +369,33 @@ class RecordingManager:
 
         return stopped, []
 
+    async def run_retention_cleanup(
+        self,
+        *,
+        now: datetime | None = None,
+        target: RetentionTarget = RetentionTarget.ALL,
+    ) -> RetentionCleanupResult:
+        current_time = now or datetime.now()
+
+        async with self._lock:
+            protection = build_protection_snapshot(
+                [
+                    (session.wav_path, session.metadata_path)
+                    for session in self._sessions.values()
+                ]
+            )
+
+        return await asyncio.to_thread(
+            run_retention_cleanup,
+            recordings_dir=resolve_recordings_dir(self.settings),
+            slices_dir=resolve_slices_dir(self.settings),
+            recording_retention_days=self.settings.recording_retention_days,
+            slice_retention_days=self.settings.recording_slice_retention_days,
+            protection=protection,
+            now=current_time,
+            target=target,
+        )
+
     def _missing_recording_config(self) -> list[str]:
         missing: list[str] = []
         if not self.settings.server_host:
@@ -459,6 +492,7 @@ class RecordingManager:
             nickname=nickname,
             participant_names=self._participant_names(status, channel_id),
         )
+        self._sessions[channel_id] = session
 
         try:
             await self._launcher.start(
@@ -469,6 +503,7 @@ class RecordingManager:
                 channel_password=self.settings.recording_channel_password,
             )
         except Exception as exc:
+            self._sessions.pop(channel_id, None)
             logger.error(
                 "failed to start TS3 recorder for channel {} ({}): {}",
                 channel_id,
@@ -478,7 +513,6 @@ class RecordingManager:
             self._identity_pool.insert(0, identity)
             return
 
-        self._sessions[channel_id] = session
         logger.info(
             "TS3 recording started for channel {} ({}) -> {}",
             channel_id,
@@ -488,7 +522,7 @@ class RecordingManager:
 
     async def _stop_session(self, channel_id: str, *, ended_at: datetime) -> None:
         self._test_sessions.discard(channel_id)
-        session = self._sessions.pop(channel_id, None)
+        session = self._sessions.get(channel_id)
         if session is None:
             return
 
@@ -513,6 +547,7 @@ class RecordingManager:
                 duration,
             )
 
+        self._sessions.pop(channel_id, None)
         self._identity_pool.append(session.identity)
 
     def _recording_output_dir(self) -> Path:

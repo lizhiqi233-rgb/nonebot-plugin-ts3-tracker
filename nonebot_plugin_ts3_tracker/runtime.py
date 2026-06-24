@@ -23,6 +23,7 @@ from .storage_paths import (
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
 from .recording import RecordingManager
+from .recording.retention import RetentionTarget
 from .service import Ts3TrackerService
 from .storage import GroupNotifyStore, SnapshotStore, TrackedClientSnapshot
 
@@ -58,6 +59,7 @@ class Ts3TrackerRuntime:
         self._group_notify_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._poll_task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._recording_manager = RecordingManager(
             settings, Path(__file__).resolve().parent
         )
@@ -106,6 +108,18 @@ class Ts3TrackerRuntime:
         else:
             logger.info("TS3 频道录音已关闭。")
 
+        if self._is_retention_cleanup_enabled():
+            logger.info(
+                "TS3 录音文件定时清理已开启，完整录音保留 {} 天，切片保留 {} 天，间隔 {} 小时。",
+                self.settings.recording_retention_days or "不清理",
+                self.settings.recording_slice_retention_days or "不清理",
+                self.settings.recording_cleanup_interval_hours,
+            )
+            await self.run_retention_cleanup_once()
+            self._ensure_cleanup_task()
+        else:
+            logger.info("TS3 录音文件定时清理已关闭（retention_days 均为 0）。")
+
         if self.settings.notification_enabled or self.settings.recording_enabled:
             await self.sync_once(notify=not self.settings.startup_silent)
             self._ensure_poll_task()
@@ -113,6 +127,13 @@ class Ts3TrackerRuntime:
     async def shutdown(self) -> None:
         self._stop_event.set()
         await self._recording_manager.shutdown()
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
         if self._poll_task is not None:
             self._poll_task.cancel()
             try:
@@ -184,6 +205,88 @@ class Ts3TrackerRuntime:
                 )
             except asyncio.TimeoutError:
                 continue
+
+    def _is_retention_cleanup_enabled(self) -> bool:
+        return (
+            self.settings.recording_retention_days > 0
+            or self.settings.recording_slice_retention_days > 0
+        )
+
+    def _ensure_cleanup_task(self) -> None:
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            return
+        self._cleanup_task = asyncio.create_task(self._retention_cleanup_loop())
+
+    async def _retention_cleanup_loop(self) -> None:
+        interval_seconds = self.settings.recording_cleanup_interval_hours * 3600
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=interval_seconds,
+                )
+            except asyncio.TimeoutError:
+                pass
+            else:
+                break
+
+            if self._stop_event.is_set():
+                break
+
+            try:
+                await self.run_retention_cleanup_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover
+                logger.error("TS3 录音文件定时清理异常：{}", exc)
+
+    async def run_retention_cleanup_once(self) -> None:
+        from .recording.retention import format_cleanup_result
+
+        result = await self._recording_manager.run_retention_cleanup(
+            now=self._now_factory()
+        )
+        if not result.has_changes:
+            return
+
+        message = format_cleanup_result(result)
+        if result.total_deleted_files > 0:
+            logger.info(
+                "TS3 录音文件定时清理完成，删除 {} 个文件。",
+                result.total_deleted_files,
+            )
+        if result.errors:
+            logger.warning("{}", message)
+
+    async def cleanup_recordings_manual(
+        self,
+        *,
+        target: RetentionTarget,
+    ) -> str:
+        from .recording.retention import format_cleanup_result
+
+        if target == RetentionTarget.RECORDINGS and self.settings.recording_retention_days <= 0:
+            return (
+                "未配置完整录音保留天数，请设置 "
+                "TS3_TRACKER__RECORDING_RETENTION_DAYS>0。"
+            )
+        if target == RetentionTarget.SLICES and self.settings.recording_slice_retention_days <= 0:
+            return (
+                "未配置切片保留天数，请设置 "
+                "TS3_TRACKER__RECORDING_SLICE_RETENTION_DAYS>0。"
+            )
+        if target == RetentionTarget.ALL and not self._is_retention_cleanup_enabled():
+            return (
+                "未配置录音文件保留策略，请设置 "
+                "TS3_TRACKER__RECORDING_RETENTION_DAYS 或 "
+                "TS3_TRACKER__RECORDING_SLICE_RETENTION_DAYS。"
+            )
+
+        result = await self._recording_manager.run_retention_cleanup(
+            now=self._now_factory(),
+            target=target,
+        )
+        return format_cleanup_result(result)
 
     def _build_snapshot(
         self, status: Ts3ServerStatus
@@ -410,6 +513,9 @@ class Ts3TrackerRuntime:
             f"录音目录：{resolve_recordings_dir(self.settings)}",
             f"切片目录：{resolve_slices_dir(self.settings)}",
             f"identity 目录：{resolve_identities_dir()}",
+            f"完整录音保留：{self._format_retention_days(self.settings.recording_retention_days)}",
+            f"切片保留：{self._format_retention_days(self.settings.recording_slice_retention_days)}",
+            f"定时清理间隔：{self.settings.recording_cleanup_interval_hours} 小时",
         ]
         if not sessions:
             lines.append("当前无进行中的录音会话。")
@@ -426,6 +532,11 @@ class Ts3TrackerRuntime:
                     f"{session.wav_path.name}"
                 )
         return "\n".join(lines)
+
+    def _format_retention_days(self, days: int) -> str:
+        if days <= 0:
+            return "不自动清理"
+        return f"{days} 天"
 
     async def force_start_recordings(self, *, channel: str | None = None) -> str:
         if not self.settings.recording_enabled:
@@ -508,10 +619,7 @@ class Ts3TrackerRuntime:
         if not results and errors:
             return "\n".join(errors)
 
-        lines = [
-            f"TS3 录音切片完成（请求最近 {minutes} 分钟）",
-            f"切片目录：{resolve_slices_dir(self.settings)}",
-        ]
+        lines = [f"TS3 录音切片完成（请求最近 {minutes} 分钟）"]
         for result in results:
             actual_text = self._format_duration(int(result.actual_seconds))
             requested_text = self._format_duration(result.requested_seconds)
@@ -520,8 +628,7 @@ class Ts3TrackerRuntime:
             else:
                 duration_note = f"时长 {actual_text}"
             lines.append(
-                f"- {result.channel_name} ({result.channel_id})："
-                f"{duration_note} -> {result.output_path}"
+                f"- {result.channel_name} ({result.channel_id})：{duration_note}"
             )
         lines.extend(errors)
         return "\n".join(lines)
