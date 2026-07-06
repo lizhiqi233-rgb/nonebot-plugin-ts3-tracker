@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from nonebot.compat import BaseModel, field_validator
+
+from .parsing import parse_delimited_list
 
 
 class Ts3TrackerSettings(BaseModel):
@@ -35,11 +38,12 @@ class Ts3TrackerSettings(BaseModel):
     recording_min_session_seconds: int = 5
     recording_min_human_count: int = 2
     recording_stop_grace_seconds: int = 300
-    recording_slice_default_minutes: int = 5
+    recording_slice_default_minutes: int = 3
     # 0 表示不自动清理；按目录日期 YYYY-MM-DD 判定过期
     recording_retention_days: int = 7
     recording_slice_retention_days: int = 7
-    recording_cleanup_interval_hours: int = 24
+    # 每日自动清理过期录音的本地时间，格式 HH:MM（24 小时制）
+    recording_cleanup_time: str = "04:00"
 
     @field_validator(
         "server_host",
@@ -92,10 +96,17 @@ class Ts3TrackerSettings(BaseModel):
     def validate_recording_retention_days(cls, value: int) -> int:
         return max(0, value)
 
-    @field_validator("recording_cleanup_interval_hours")
+    @field_validator("recording_cleanup_time", mode="before")
     @classmethod
-    def validate_recording_cleanup_interval_hours(cls, value: int) -> int:
-        return max(1, value)
+    def validate_recording_cleanup_time(cls, value: object) -> str:
+        text = str(value).strip()
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+        if not match:
+            raise ValueError("recording_cleanup_time 格式应为 HH:MM，例如 04:00")
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("recording_cleanup_time 时间无效")
+        return f"{hour:02d}:{minute:02d}"
 
     @field_validator("query_timeout_seconds")
     @classmethod
@@ -103,18 +114,12 @@ class Ts3TrackerSettings(BaseModel):
         return max(1.0, value)
 
     def parse_targets(self, raw: str) -> list[str]:
-        normalized = raw.replace("\r", "\n").replace(";", "\n").replace(",", "\n")
-        targets = [item.strip() for item in normalized.split("\n")]
-        return [item for item in targets if item]
+        return parse_delimited_list(raw)
 
     def is_group_allowed(self, group_id: str | int | None) -> bool:
         if group_id is None or not self.group_whitelist_enabled:
             return True
         return str(group_id) in set(self.parse_targets(self.group_whitelist_groups))
-
-    def get_effective_notify_groups(self) -> list[str]:
-        notify_groups = self.get_notify_groups()
-        return self.filter_groups_by_whitelist(notify_groups)
 
     def get_notify_groups(self) -> list[str]:
         return self.parse_targets(self.notify_target_groups)

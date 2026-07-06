@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import nonebot
@@ -14,6 +14,7 @@ require("nonebot_plugin_localstore")
 import nonebot_plugin_localstore as store
 
 from .config import Ts3TrackerSettings
+from .file_send import send_group_file
 from .storage_paths import (
     ensure_storage_layout,
     resolve_identities_dir,
@@ -24,6 +25,7 @@ from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
 from .recording import RecordingManager
 from .recording.retention import RetentionTarget
+from .recording.slice import SliceResult
 from .service import Ts3TrackerService
 from .storage import GroupNotifyStore, SnapshotStore, TrackedClientSnapshot
 
@@ -110,10 +112,10 @@ class Ts3TrackerRuntime:
 
         if self._is_retention_cleanup_enabled():
             logger.info(
-                "TS3 录音文件定时清理已开启，完整录音保留 {} 天，切片保留 {} 天，间隔 {} 小时。",
+                "TS3 录音文件定时清理已开启，完整录音保留 {} 天，切片保留 {} 天，每日 {} 执行。",
                 self.settings.recording_retention_days or "不清理",
                 self.settings.recording_slice_retention_days or "不清理",
-                self.settings.recording_cleanup_interval_hours,
+                self.settings.recording_cleanup_time,
             )
             await self.run_retention_cleanup_once()
             self._ensure_cleanup_task()
@@ -217,13 +219,31 @@ class Ts3TrackerRuntime:
             return
         self._cleanup_task = asyncio.create_task(self._retention_cleanup_loop())
 
+    def _parse_cleanup_time(self) -> time:
+        hour, minute = map(int, self.settings.recording_cleanup_time.split(":"))
+        return time(hour=hour, minute=minute)
+
+    def _seconds_until_next_cleanup(self, now: datetime) -> float:
+        cleanup_time = self._parse_cleanup_time()
+        today_run = now.replace(
+            hour=cleanup_time.hour,
+            minute=cleanup_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if now < today_run:
+            next_run = today_run
+        else:
+            next_run = today_run + timedelta(days=1)
+        return max(0.0, (next_run - now).total_seconds())
+
     async def _retention_cleanup_loop(self) -> None:
-        interval_seconds = self.settings.recording_cleanup_interval_hours * 3600
         while not self._stop_event.is_set():
+            wait_seconds = self._seconds_until_next_cleanup(self._now_factory())
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(),
-                    timeout=interval_seconds,
+                    timeout=wait_seconds,
                 )
             except asyncio.TimeoutError:
                 pass
@@ -405,6 +425,35 @@ class Ts3TrackerRuntime:
             logger.error("发送 TS3 主动{}消息失败：{}", target_type, exc)
             return False
 
+    async def _send_group_slice_file(
+        self,
+        bot: Bot,
+        group_id: str | int,
+        file_path: Path,
+    ) -> bool:
+        return await send_group_file(bot, group_id, file_path)
+
+    async def _send_group_slice_files(
+        self,
+        bot: Bot,
+        group_id: str | int,
+        results: list[SliceResult],
+    ) -> list[str]:
+        errors: list[str] = []
+        for result in results:
+            if await self._send_group_slice_file(bot, group_id, result.output_path):
+                logger.info(
+                    "切片文件已发送到群 {}：{}",
+                    group_id,
+                    result.output_path.name,
+                )
+                continue
+            errors.append(
+                f"{result.channel_name} ({result.channel_id})："
+                f"切片 {result.output_path.name} 发送到群聊失败。"
+            )
+        return errors
+
     def _select_bot(self) -> Bot | None:
         bots = nonebot.get_bots()
         for bot in bots.values():
@@ -440,9 +489,6 @@ class Ts3TrackerRuntime:
             ordered_groups.append(group_id)
         return self.settings.filter_groups_by_whitelist(ordered_groups)
 
-    def is_group_notify_enabled(self, group_id: str | int) -> bool:
-        return str(group_id) in set(self.get_effective_notify_groups())
-
     async def set_group_notify_enabled(
         self, group_id: str | int, enabled: bool
     ) -> bool:
@@ -465,43 +511,20 @@ class Ts3TrackerRuntime:
     def _format_now(self) -> str:
         return self._now_factory().strftime("%Y-%m-%d %H:%M:%S")
 
-    def _format_duration(self, seconds: int) -> str:
-        total = max(0, seconds)
-        hours, remainder = divmod(total, 3600)
-        minutes, secs = divmod(remainder, 60)
-        if hours:
-            return f"{hours}小时{minutes}分{secs}秒"
-        if minutes:
-            return f"{minutes}分{secs}秒"
-        return f"{secs}秒"
-
-    def _format_online_duration(self, snapshot: TrackedClientSnapshot) -> str:
+    def _snapshot_duration_seconds(self, snapshot: TrackedClientSnapshot) -> int:
         if snapshot.first_seen_at:
             try:
-                started_at = datetime.strptime(snapshot.first_seen_at, "%Y-%m-%d %H:%M:%S")
+                started_at = datetime.strptime(
+                    snapshot.first_seen_at, "%Y-%m-%d %H:%M:%S"
+                )
             except ValueError:
-                started_at = None
+                pass
             else:
-                seconds = int((self._now_factory() - started_at).total_seconds())
-                return self._format_duration(seconds)
-        return self._format_duration(snapshot.connected_duration_seconds)
+                return max(0, int((self._now_factory() - started_at).total_seconds()))
+        return max(0, snapshot.connected_duration_seconds)
 
-    def _format_online_list(self, status: Ts3ServerStatus) -> str:
-        users = [
-            user
-            for user in status.users
-            if not self.settings.is_recording_bot_nickname(user.nickname)
-        ]
-        if not users:
-            return "暂无在线用户"
-        return ", ".join(user.nickname for user in users)
-
-    def _count_broadcast_users(self, status: Ts3ServerStatus) -> int:
-        return sum(
-            1
-            for user in status.users
-            if not self.settings.is_recording_bot_nickname(user.nickname)
-        )
+    def _format_online_duration(self, snapshot: TrackedClientSnapshot) -> str:
+        return self.service._format_duration(self._snapshot_duration_seconds(snapshot))
 
     def build_recording_status_message(self) -> str:
         channels = self.settings.get_recording_channels()
@@ -515,7 +538,7 @@ class Ts3TrackerRuntime:
             f"identity 目录：{resolve_identities_dir()}",
             f"完整录音保留：{self._format_retention_days(self.settings.recording_retention_days)}",
             f"切片保留：{self._format_retention_days(self.settings.recording_slice_retention_days)}",
-            f"定时清理间隔：{self.settings.recording_cleanup_interval_hours} 小时",
+            f"定时清理时间：每日 {self.settings.recording_cleanup_time}",
         ]
         if not sessions:
             lines.append("当前无进行中的录音会话。")
@@ -539,9 +562,6 @@ class Ts3TrackerRuntime:
         return f"{days} 天"
 
     async def force_start_recordings(self, *, channel: str | None = None) -> str:
-        if not self.settings.recording_enabled:
-            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
-
         missing_fields = self.service.get_missing_required_fields()
         if missing_fields:
             return "TS3 配置不完整，请先填写：" + "、".join(missing_fields)
@@ -557,8 +577,10 @@ class Ts3TrackerRuntime:
             channel_filter=channel,
             started_at=self._now_factory(),
         )
-        if not started and messages:
-            return "\n".join(messages)
+        if not started:
+            if messages:
+                return "\n".join(messages)
+            return "当前没有可启动的测试录音频道。"
 
         lines = ["TS3 测试录音已启动（不受最低人数限制，轮询不会自动停录）："]
         for session in started:
@@ -569,15 +591,14 @@ class Ts3TrackerRuntime:
         return "\n".join(lines)
 
     async def stop_recordings(self, *, channel: str | None = None) -> str:
-        if not self.settings.recording_enabled:
-            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
-
         stopped, messages = await self._recording_manager.stop_active_sessions(
             channel_filter=channel,
             ended_at=self._now_factory(),
         )
-        if not stopped and messages:
-            return "\n".join(messages)
+        if not stopped:
+            if messages:
+                return "\n".join(messages)
+            return "当前没有进行中的录音。"
 
         lines = ["TS3 录音已停止："]
         for session, was_test in stopped:
@@ -598,11 +619,11 @@ class Ts3TrackerRuntime:
         self,
         *,
         duration_minutes: int | None = None,
-        channel: str | None = None,
+        output_basename: str | None = None,
+        channel_filter: str | None = None,
+        group_id: str | int | None = None,
+        bot: Bot | None = None,
     ) -> str:
-        if not self.settings.recording_enabled:
-            return "当前未开启 TS3 频道录音，请设置 TS3_TRACKER__RECORDING_ENABLED=true。"
-
         minutes = (
             duration_minutes
             if duration_minutes is not None
@@ -613,7 +634,8 @@ class Ts3TrackerRuntime:
 
         results, errors = await self._recording_manager.slice_active_sessions(
             duration_minutes=minutes,
-            channel_filter=channel,
+            output_basename=output_basename,
+            channel_filter=channel_filter,
             triggered_at=self._now_factory(),
         )
         if not results and errors:
@@ -621,15 +643,29 @@ class Ts3TrackerRuntime:
 
         lines = [f"TS3 录音切片完成（请求最近 {minutes} 分钟）"]
         for result in results:
-            actual_text = self._format_duration(int(result.actual_seconds))
-            requested_text = self._format_duration(result.requested_seconds)
+            actual_text = self.service._format_duration(int(result.actual_seconds))
+            requested_text = self.service._format_duration(result.requested_seconds)
             if int(result.actual_seconds) < result.requested_seconds:
                 duration_note = f"实际 {actual_text}（可用内容不足 {requested_text}）"
             else:
                 duration_note = f"时长 {actual_text}"
             lines.append(
-                f"- {result.channel_name} ({result.channel_id})：{duration_note}"
+                f"- {result.channel_name} ({result.channel_id})：{duration_note} -> "
+                f"{result.output_path.name}"
             )
+        if results and group_id is not None:
+            sender = bot or self._select_bot()
+            if sender is None:
+                errors.append("没有可用的机器人，无法自动发送切片文件到群聊。")
+            else:
+                send_errors = await self._send_group_slice_files(
+                    sender,
+                    group_id,
+                    results,
+                )
+                errors.extend(send_errors)
+                if not send_errors:
+                    lines.append("切片文件已发送到当前群聊。")
         lines.extend(errors)
         return "\n".join(lines)
 
@@ -637,17 +673,25 @@ class Ts3TrackerRuntime:
         key = self._user_key(user)
         snapshot = self._snapshot.get(key)
         if snapshot is not None:
-            if snapshot.first_seen_at:
-                try:
-                    started_at = datetime.strptime(
-                        snapshot.first_seen_at, "%Y-%m-%d %H:%M:%S"
-                    )
-                except ValueError:
-                    pass
-                else:
-                    return max(0, int((self._now_factory() - started_at).total_seconds()))
-            if snapshot.connected_duration_seconds > 0:
-                return snapshot.connected_duration_seconds
+            seconds = self._snapshot_duration_seconds(snapshot)
+            if seconds > 0 or snapshot.first_seen_at:
+                return seconds
         if user.connected_duration_seconds > 0:
             return user.connected_duration_seconds
         return None
+
+    def _broadcast_users(self, status: Ts3ServerStatus) -> list[Ts3OnlineUser]:
+        return [
+            user
+            for user in status.users
+            if not self.settings.is_recording_bot_nickname(user.nickname)
+        ]
+
+    def _format_online_list(self, status: Ts3ServerStatus) -> str:
+        users = self._broadcast_users(status)
+        if not users:
+            return "暂无在线用户"
+        return ", ".join(user.nickname for user in users)
+
+    def _count_broadcast_users(self, status: Ts3ServerStatus) -> int:
+        return len(self._broadcast_users(status))

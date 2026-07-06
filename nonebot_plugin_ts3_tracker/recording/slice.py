@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .paths import normalize_output_basename
+
 # Must stay in sync with recorder_sidecar/src/main.rs (48 kHz mono 16-bit PCM).
 RECORDER_SAMPLE_RATE = 48_000
 RECORDER_CHANNELS = 1
@@ -93,40 +95,80 @@ def write_slice_metadata(
     )
 
 
+@dataclass(slots=True)
+class SliceCommandArgs:
+    duration_minutes: int
+    output_basename: str | None = None
+    channel_filter: str | None = None
+
+
+def _consume_until_flag(tokens: list[str], start_index: int) -> tuple[str, int]:
+    parts: list[str] = []
+    index = start_index
+    while index < len(tokens) and not tokens[index].startswith("-"):
+        parts.append(tokens[index])
+        index += 1
+    return " ".join(parts).strip(), index
+
+
 def parse_slice_command_args(
     raw: str,
     *,
     default_minutes: int,
-) -> tuple[int, str | None] | str:
+) -> SliceCommandArgs | str:
     remainder = raw.removeprefix("切片").strip()
+    minutes = default_minutes
+    basename: str | None = None
+    channel_filter: str | None = None
+
     if not remainder:
-        return default_minutes, None
+        return SliceCommandArgs(minutes, basename, channel_filter)
 
-    parts = remainder.split()
-    if len(parts) == 1:
-        token = parts[0]
-        if token.isdigit():
-            return int(token), None
-        return default_minutes, token
+    tokens = remainder.split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-sm":
+            if index + 1 >= len(tokens):
+                return "-sm 需要指定分钟数，例如：/ts 切片 -sm 3 测试"
+            minutes_token = tokens[index + 1]
+            if not minutes_token.isdigit():
+                return "切片分钟数必须是正整数，例如：/ts 切片 -sm 3 测试"
+            minutes = int(minutes_token)
+            index += 2
+            basename, index = _consume_until_flag(tokens, index)
+            continue
+        if token == "-s":
+            if index + 1 >= len(tokens):
+                return "-s 需要指定分钟数，例如：/ts 切片 -s 3"
+            minutes_token = tokens[index + 1]
+            if not minutes_token.isdigit():
+                return "切片分钟数必须是正整数，例如：/ts 切片 -s 3"
+            minutes = int(minutes_token)
+            index += 2
+            continue
+        if token == "-m":
+            if index + 1 >= len(tokens):
+                return "-m 需要指定保存文件名，例如：/ts 切片 -m 测试"
+            basename, index = _consume_until_flag(tokens, index + 1)
+            if not basename:
+                return "-m 需要指定保存文件名，例如：/ts 切片 -m 测试"
+            continue
+        if token == "-c":
+            if index + 1 >= len(tokens):
+                return "-c 需要指定频道，例如：/ts 切片 -c Lobby"
+            channel_filter, index = _consume_until_flag(tokens, index + 1)
+            if not channel_filter:
+                return "-c 需要指定频道（ID 或名称），例如：/ts 切片 -c Lobby"
+            continue
+        return (
+            "未知参数。用法：/ts 切片 -sm <分钟> <文件名>、"
+            "/ts 切片 -s <分钟>、/ts 切片 -m <文件名>、/ts 切片 -c <频道>"
+        )
 
-    minutes_token = parts[0]
-    if not minutes_token.isdigit():
-        return "切片分钟数必须是正整数，例如：/ts 切片 5 Lobby"
-    channel = " ".join(parts[1:]).strip()
-    if not channel:
-        return int(minutes_token), None
-    return int(minutes_token), channel
+    if minutes <= 0:
+        return "切片分钟数必须是正整数。"
+    if basename is not None and not normalize_output_basename(basename):
+        return "保存文件名无效，请使用不含路径分隔符的名称。"
 
-
-def session_matches_channel_filter(
-    *,
-    channel_id: str,
-    channel_name: str,
-    channel_filter: str,
-) -> bool:
-    normalized = channel_filter.strip()
-    if not normalized:
-        return True
-    if normalized.isdigit() or normalized.lstrip("-").isdigit():
-        return channel_id == normalized
-    return channel_name.casefold() == normalized.casefold()
+    return SliceCommandArgs(minutes, basename, channel_filter)

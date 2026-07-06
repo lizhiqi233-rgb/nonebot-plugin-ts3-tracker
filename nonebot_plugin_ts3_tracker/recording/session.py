@@ -21,10 +21,6 @@ class ChannelRecordingSession:
     process: asyncio.subprocess.Process | None = None
     participant_names: set[str] = field(default_factory=set)
 
-    @property
-    def is_running(self) -> bool:
-        return self.process is not None and self.process.returncode is None
-
     def to_metadata_payload(self, *, ended_at: datetime) -> dict[str, object]:
         return {
             "channel_id": self.channel_id,

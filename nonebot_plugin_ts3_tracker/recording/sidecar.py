@@ -8,6 +8,7 @@ from pathlib import Path
 
 from nonebot import logger
 
+from ..parsing import parse_delimited_list
 from .session import ChannelRecordingSession
 
 
@@ -165,7 +166,7 @@ def resolve_sidecar_path(configured_path: str, plugin_dir: Path) -> Path:
 
 def resolve_identity_entries(raw: str, identities_dir: Path) -> list[str]:
     entries: list[str] = []
-    for item in _split_lines(raw):
+    for item in parse_delimited_list(raw):
         path = Path(item).expanduser()
         if path.is_file():
             entries.append(str(path.resolve()))
@@ -183,8 +184,3 @@ def resolve_identity_entries(raw: str, identities_dir: Path) -> list[str]:
             if path.is_file():
                 entries.append(str(path.resolve()))
     return entries
-
-
-def _split_lines(raw: str) -> list[str]:
-    normalized = raw.replace("\r", "\n").replace(";", "\n").replace(",", "\n")
-    return [item.strip() for item in normalized.split("\n") if item.strip()]

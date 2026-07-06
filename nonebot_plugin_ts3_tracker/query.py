@@ -124,7 +124,6 @@ class Ts3QueryClient:
                     client_id=client.get("clid", ""),
                     database_id=client.get("client_database_id", ""),
                     unique_id=client.get("client_unique_identifier", ""),
-                    client_ip=client.get("connection_client_ip", ""),
                     connected_duration_seconds=max(
                         0,
                         self._safe_int(client.get("connection_connected_time"), 0) // 1000,
@@ -142,7 +141,6 @@ class Ts3QueryClient:
             server_name=serverinfo.get("virtualserver_name", ""),
             server_host=self.host,
             server_port=server_port,
-            online_count=len(users),
             channels=channel_order,
             users=users,
         )

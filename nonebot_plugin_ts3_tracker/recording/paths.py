@@ -52,15 +52,34 @@ def build_session_paths(
     )
 
 
+def normalize_output_basename(name: str) -> str:
+    cleaned = name.strip()
+    if cleaned.lower().endswith(".wav"):
+        cleaned = cleaned[:-4].strip()
+    cleaned = sanitize_channel_name(cleaned)
+    return cleaned
+
+
 def build_slice_paths(
     slices_dir: Path,
     channel_id: str,
     channel_name: str,
     triggered_at: datetime,
     duration_minutes: int,
+    output_basename: str | None = None,
+    *,
+    disambiguate_channel: bool = False,
 ) -> tuple[Path, Path]:
-    time_part = triggered_at.strftime("%H%M%S")
-    filename = f"{time_part}_slice_{duration_minutes}m.wav"
+    if output_basename:
+        safe_name = normalize_output_basename(output_basename)
+        if not safe_name:
+            raise ValueError("slice output basename is empty after sanitization")
+        if disambiguate_channel:
+            safe_name = f"{safe_name}_{build_channel_segment(channel_id, channel_name)}"
+        filename = f"{safe_name}.wav"
+    else:
+        time_part = triggered_at.strftime("%H%M%S")
+        filename = f"{time_part}_slice_{duration_minutes}m.wav"
     return build_dated_audio_paths(
         slices_dir,
         channel_id,

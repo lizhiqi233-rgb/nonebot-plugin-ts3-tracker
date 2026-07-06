@@ -11,7 +11,6 @@ class Ts3OnlineUser:
     client_id: str
     database_id: str
     unique_id: str
-    client_ip: str
     connected_duration_seconds: int
     away: bool
 
@@ -21,6 +20,5 @@ class Ts3ServerStatus:
     server_name: str
     server_host: str
     server_port: int
-    online_count: int
     channels: list[tuple[str, str]]
     users: list[Ts3OnlineUser]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
 
 from nonebot import logger
 
@@ -24,9 +23,6 @@ class Ts3TrackerService:
         self.settings = settings
         self._client_factory = client_factory
         self._duration_provider = duration_provider
-
-    async def build_server_message(self) -> str:
-        return await self.build_detail_message()
 
     async def build_basic_message(self) -> str:
         return await self._build_message(detailed=False)
@@ -73,7 +69,6 @@ class Ts3TrackerService:
             lines.extend(
                 [
                     f"服务器地址：{status.server_host}:{status.server_port}",
-                    f"服务器端口：{status.server_port}",
                     f"服务器名称：{status.server_name or '-'}",
                     "服务器频道：",
                 ]
