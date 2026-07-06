@@ -1,0 +1,46 @@
+[project]
+name = "nonebot-plugin-ts3-tracker"
+version = "1.1.0"
+description = "TeamSpeak 3 query, join/leave notification, and channel recording plugin for NoneBot2"
+authors = [{ name = "lizhiqi233-rgb" }]
+readme = "README.md"
+license = "MIT"
+keywords = ["nonebot", "nonebot2", "ts3", "teamspeak3", "serverquery", "onebot"]
+requires-python = ">=3.10, <4.0"
+dependencies = [
+  "nonebot2 >=2.4.4, <3.0.0",
+  "nonebot-adapter-onebot >=2.4.0, <3.0.0",
+  "nonebot-plugin-localstore >=0.7.4, <1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker"
+Repository = "https://github.com/lizhiqi233-rgb/nonebot-plugin-ts3-tracker"
+
+[dependency-groups]
+test = [
+  "nonebug >=0.4.1, <0.5.0",
+  "pytest >=8.0.0, <9.0.0",
+  "pytest-asyncio >=0.24.0, <1.0.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["B008", "E501", "RUF001"]
+
+[tool.setuptools]
+packages = ["nonebot_plugin_ts3_tracker"]
+
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
