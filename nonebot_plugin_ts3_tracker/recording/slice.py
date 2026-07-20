@@ -58,7 +58,11 @@ def slice_wav_tail(
         raise SliceError("source recording has no readable audio data")
 
     start_offset = header_bytes + pcm_size - slice_bytes
-    pcm_data = source_path.read_bytes()[start_offset : start_offset + slice_bytes]
+    with source_path.open("rb") as reader:
+        reader.seek(start_offset)
+        pcm_data = reader.read(slice_bytes)
+    if len(pcm_data) != slice_bytes:
+        raise SliceError("failed to read requested audio tail from source recording")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():

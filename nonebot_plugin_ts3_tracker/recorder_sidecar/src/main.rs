@@ -6,6 +6,7 @@ use clap::Parser;
 use futures::prelude::*;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use slog::Logger;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time;
 use tracing::{error, info, warn};
 use tsclientlib::audio::AudioHandler;
@@ -33,9 +34,11 @@ struct Args {
     identity: String,
     #[arg(long)]
     nickname: String,
-    #[arg(long, default_value = "")]
+    /// Prefer env `TS3_RECORDER_SERVER_PASSWORD` over CLI to avoid leaking via ps.
+    #[arg(long, default_value = "", env = "TS3_RECORDER_SERVER_PASSWORD")]
     password: String,
-    #[arg(long, default_value = "")]
+    /// Prefer env `TS3_RECORDER_CHANNEL_PASSWORD` over CLI to avoid leaking via ps.
+    #[arg(long, default_value = "", env = "TS3_RECORDER_CHANNEL_PASSWORD")]
     channel_password: String,
     #[arg(long)]
     output: PathBuf,
@@ -97,7 +100,11 @@ async fn main() -> Result<()> {
             .context("failed to configure recorder client audio flags")?;
     }
 
-    eprintln!("READY channel_id={} output={}", args.channel_id, args.output.display());
+    eprintln!(
+        "READY channel_id={} output={}",
+        args.channel_id,
+        args.output.display()
+    );
     info!(
         channel_id = args.channel_id,
         channel_name = %args.channel_name,
@@ -111,8 +118,7 @@ async fn main() -> Result<()> {
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
-    let mut wav_writer =
-        WavWriter::create(&args.output, spec).context("create wav writer")?;
+    let mut wav_writer = WavWriter::create(&args.output, spec).context("create wav writer")?;
 
     let mut audio_handler = AudioHandler::new(Logger::root(slog::Discard, slog::o!()));
     let mut frame = vec![0.0f32; FRAME_SAMPLES];
@@ -120,9 +126,12 @@ async fn main() -> Result<()> {
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     let mut events = connection.events();
+    let shutdown = wait_for_shutdown_signal();
+    tokio::pin!(shutdown);
+
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut shutdown => {
                 info!("received shutdown signal");
                 break;
             }
@@ -159,9 +168,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    wav_writer
-        .finalize()
-        .context("finalize wav writer")?;
+    wav_writer.finalize().context("finalize wav writer")?;
     drop(events);
     connection.disconnect(DisconnectOptions::new())?;
 
@@ -171,6 +178,51 @@ async fn main() -> Result<()> {
         args.output.display()
     );
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    let stdin_stop = wait_for_stdin_stop();
+    tokio::pin!(stdin_stop);
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = match tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        ) {
+            Ok(signal) => signal,
+            Err(error) => {
+                warn!(%error, "failed to register SIGTERM handler");
+                stdin_stop.await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+            _ = &mut stdin_stop => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = &mut stdin_stop => {}
+        }
+    }
+}
+
+async fn wait_for_stdin_stop() {
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) if line.trim().eq_ignore_ascii_case("STOP") => return,
+            Ok(Some(_)) => continue,
+            Ok(None) => return,
+            Err(_) => return,
+        }
+    }
 }
 
 fn audio_sender_id(packet: &tsproto_packets::packets::InAudioBuf) -> Option<ClientId> {

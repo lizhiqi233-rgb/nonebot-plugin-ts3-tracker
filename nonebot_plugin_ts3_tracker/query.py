@@ -58,14 +58,64 @@ class Ts3QueryClient:
         self.username = username
         self.password = password
         self.timeout = timeout
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        async with self._lock:
+            await self._disconnect_unlocked()
 
     async def fetch_status(self) -> Ts3ServerStatus:
-        try:
-            return await asyncio.wait_for(self._fetch_status_inner(), timeout=self.timeout)
-        except asyncio.TimeoutError as exc:
-            raise Ts3QueryError(f"TS3 查询超时（{self.timeout:.0f} 秒）") from exc
+        async with self._lock:
+            last_error: Exception | None = None
+            for attempt in range(2):
+                try:
+                    return await asyncio.wait_for(
+                        self._fetch_status_unlocked(),
+                        timeout=self.timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    await self._disconnect_unlocked()
+                    last_error = Ts3QueryError(
+                        f"TS3 查询超时（{self.timeout:.0f} 秒）"
+                    )
+                    last_error.__cause__ = exc
+                except Ts3QueryError as exc:
+                    await self._disconnect_unlocked()
+                    last_error = exc
+                    if attempt == 0:
+                        continue
+                    raise
+                except Exception as exc:  # pragma: no cover - network dependent
+                    await self._disconnect_unlocked()
+                    raise Ts3QueryError(f"TS3 查询失败：{exc}") from exc
+            assert last_error is not None
+            raise last_error
 
-    async def _fetch_status_inner(self) -> Ts3ServerStatus:
+    async def _fetch_status_unlocked(self) -> Ts3ServerStatus:
+        await self._ensure_connected_unlocked()
+        assert self._reader is not None
+        assert self._writer is not None
+
+        serverinfo_records = await self._execute(
+            self._reader, self._writer, "serverinfo", "serverinfo"
+        )
+        channel_records = await self._execute(
+            self._reader, self._writer, "channellist", "channellist"
+        )
+        client_records = await self._execute(
+            self._reader,
+            self._writer,
+            "clientlist -uid -away -ip -times",
+            "clientlist",
+        )
+        return self._build_status(serverinfo_records, channel_records, client_records)
+
+    async def _ensure_connected_unlocked(self) -> None:
+        if self._reader is not None and self._writer is not None:
+            return
+
         try:
             reader, writer = await asyncio.open_connection(self.host, self.query_port)
         except Exception as exc:  # pragma: no cover - network dependent
@@ -73,6 +123,8 @@ class Ts3QueryClient:
                 f"无法连接到 ServerQuery：{self.host}:{self.query_port} ({exc})"
             ) from exc
 
+        self._reader = reader
+        self._writer = writer
         try:
             await self._consume_welcome(reader)
             await self._execute(
@@ -82,24 +134,28 @@ class Ts3QueryClient:
                 "login",
             )
             await self._execute(reader, writer, f"use port={self.server_port}", "use")
-            serverinfo_records = await self._execute(
-                reader, writer, "serverinfo", "serverinfo"
-            )
-            channel_records = await self._execute(
-                reader, writer, "channellist", "channellist"
-            )
-            client_records = await self._execute(
-                reader,
-                writer,
-                "clientlist -uid -away -ip -times",
-                "clientlist",
-            )
-            await self._write_line(writer, "quit")
-        finally:
-            writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+        except Exception:
+            await self._disconnect_unlocked()
+            raise
 
+    async def _disconnect_unlocked(self) -> None:
+        writer = self._writer
+        self._reader = None
+        self._writer = None
+        if writer is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._write_line(writer, "quit")
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+
+    def _build_status(
+        self,
+        serverinfo_records: list[dict[str, str]],
+        channel_records: list[dict[str, str]],
+        client_records: list[dict[str, str]],
+    ) -> Ts3ServerStatus:
         serverinfo = serverinfo_records[0] if serverinfo_records else {}
         channels = {
             channel.get("cid", ""): channel.get("channel_name", "")

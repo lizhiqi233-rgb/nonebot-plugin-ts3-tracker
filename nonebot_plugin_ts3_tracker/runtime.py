@@ -66,18 +66,23 @@ class Ts3TrackerRuntime:
             settings, Path(__file__).resolve().parent
         )
         self.service._duration_provider = self.get_online_duration_seconds
+        self._force_silent_baseline = False
 
     async def startup(self) -> None:
         self._stop_event.clear()
         ensure_storage_layout(self.settings)
         try:
-            self._snapshot = self._store.load()
+            self._snapshot = await asyncio.to_thread(self._store.load)
         except Exception as exc:
             logger.error("failed to load ts3 snapshot store: {}", exc)
             self._snapshot = {}
+            # Avoid treating a wiped snapshot as a mass join burst.
+            self._force_silent_baseline = True
 
         try:
-            self._group_notify_overrides = self._group_store.load()
+            self._group_notify_overrides = await asyncio.to_thread(
+                self._group_store.load
+            )
         except Exception as exc:
             logger.error("failed to load ts3 group notify store: {}", exc)
             self._group_notify_overrides = {}
@@ -123,19 +128,15 @@ class Ts3TrackerRuntime:
             logger.info("TS3 录音文件定时清理已关闭（retention_days 均为 0）。")
 
         if self.settings.notification_enabled or self.settings.recording_enabled:
-            await self.sync_once(notify=not self.settings.startup_silent)
+            should_notify = (
+                not self.settings.startup_silent and not self._force_silent_baseline
+            )
+            await self.sync_once(notify=should_notify)
             self._ensure_poll_task()
 
     async def shutdown(self) -> None:
         self._stop_event.set()
-        await self._recording_manager.shutdown()
-        if self._cleanup_task is not None:
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-            self._cleanup_task = None
+        # Stop poll/cleanup first so a late sync cannot restart recordings.
         if self._poll_task is not None:
             self._poll_task.cancel()
             try:
@@ -143,6 +144,15 @@ class Ts3TrackerRuntime:
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+        await self._recording_manager.shutdown()
+        await self.service.close()
 
     async def sync_once(self, *, notify: bool) -> NotificationDiff:
         missing_fields = self.service.get_missing_required_fields()
@@ -168,20 +178,27 @@ class Ts3TrackerRuntime:
             diff = self._calculate_diff(self._snapshot, current)
             self._snapshot = current
             try:
-                self._store.save(self._snapshot)
+                await asyncio.to_thread(self._store.save, self._snapshot)
             except Exception as exc:
                 logger.error("保存 TS3 快照失败：{}", exc)
 
-        if notify:
+        rebuilding_baseline = self._force_silent_baseline
+        should_notify = notify and not rebuilding_baseline
+        if rebuilding_baseline:
+            self._force_silent_baseline = False
+
+        if should_notify:
             await self._dispatch_notifications(status, diff)
         elif diff.joined or diff.left:
+            reason = "快照已重建基线" if rebuilding_baseline else "首次同步完成"
             logger.info(
-                "TS3 首次同步完成，不发送通知。进入：{}，离开：{}。",
+                "TS3 {}，不发送通知。进入：{}，离开：{}。",
+                reason,
                 "、".join(item.nickname for item in diff.joined) or "无",
                 "、".join(item.nickname for item in diff.left) or "无",
             )
 
-        if self.settings.recording_enabled:
+        if self.settings.recording_enabled and not self._stop_event.is_set():
             await self._recording_manager.sync(status, now=self._now_factory())
 
         return diff
@@ -496,7 +513,9 @@ class Ts3TrackerRuntime:
         async with self._group_notify_lock:
             current = self._group_notify_overrides.get(normalized_group_id)
             self._group_notify_overrides[normalized_group_id] = enabled
-            self._group_store.save(self._group_notify_overrides)
+            await asyncio.to_thread(
+                self._group_store.save, self._group_notify_overrides
+            )
         return current != enabled
 
     def _user_key(self, user: Ts3OnlineUser) -> str:

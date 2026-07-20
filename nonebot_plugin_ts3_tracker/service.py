@@ -23,6 +23,13 @@ class Ts3TrackerService:
         self.settings = settings
         self._client_factory = client_factory
         self._duration_provider = duration_provider
+        self._client: Ts3QueryClient | None = None
+
+    async def close(self) -> None:
+        if self._client is None:
+            return
+        await self._client.close()
+        self._client = None
 
     async def build_basic_message(self) -> str:
         return await self._build_message(detailed=False)
@@ -47,7 +54,7 @@ class Ts3TrackerService:
         return self.format_server_status(status, detailed=detailed)
 
     async def fetch_status(self) -> Ts3ServerStatus:
-        return await self._build_client().fetch_status()
+        return await self._get_client().fetch_status()
 
     def get_missing_required_fields(self) -> list[str]:
         missing: list[str] = []
@@ -134,18 +141,22 @@ class Ts3TrackerService:
 
         return ordered_groups
 
-    def _build_client(self) -> Ts3QueryClient:
-        if self._client_factory is not None:
-            return self._client_factory()
+    def _get_client(self) -> Ts3QueryClient:
+        if self._client is not None:
+            return self._client
 
-        return Ts3QueryClient(
-            host=self.settings.server_host,
-            server_port=self.settings.server_port,
-            query_port=self.settings.serverquery_port,
-            username=self.settings.serverquery_username,
-            password=self.settings.serverquery_password,
-            timeout=self.settings.query_timeout_seconds,
-        )
+        if self._client_factory is not None:
+            self._client = self._client_factory()
+        else:
+            self._client = Ts3QueryClient(
+                host=self.settings.server_host,
+                server_port=self.settings.server_port,
+                query_port=self.settings.serverquery_port,
+                username=self.settings.serverquery_username,
+                password=self.settings.serverquery_password,
+                timeout=self.settings.query_timeout_seconds,
+            )
+        return self._client
 
     def _format_user_display(
         self, user: Ts3OnlineUser, *, show_duration: bool

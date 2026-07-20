@@ -187,8 +187,8 @@ ts 清理 切片
 | `RECORDING_IDENTITIES` | 空 | identity 路径 / 文件名 / 内联字符串；留空则加载配置目录 `identities/` 下全部文件 |
 | `RECORDING_OUTPUT_DIR` | 空 | 完整录音输出根目录；留空时使用数据目录 `recordings/` |
 | `RECORDING_SIDECAR_PATH` | 空 | sidecar 二进制绝对路径；留空则自动探测 |
-| `RECORDING_SERVER_PASSWORD` | 空 | TS 服务器密码 |
-| `RECORDING_CHANNEL_PASSWORD` | 空 | 默认频道密码 |
+| `RECORDING_SERVER_PASSWORD` | 空 | TS 服务器密码（传给 sidecar 环境变量，不进进程 argv） |
+| `RECORDING_CHANNEL_PASSWORD` | 空 | 默认频道密码（同上） |
 | `RECORDING_NICKNAME_PREFIX` | `RecBot` | 录音 bot 昵称前缀（用于识别并排除统计） |
 | `RECORDING_MIN_SESSION_SECONDS` | `5` | 低于该秒数的录音会被丢弃 |
 | `RECORDING_MIN_HUMAN_COUNT` | `2` | 频道内至少多少**真人**（不含 RecBot）才开始录音 |
@@ -243,11 +243,14 @@ TS3_TRACKER__GROUP_WHITELIST_GROUPS=100000000
 1. 轮询检测到监控频道内真人数量 ≥ `RECORDING_MIN_HUMAN_COUNT` 时启动录音
 2. 真人数量降至阈值以下时，进入 `RECORDING_STOP_GRACE_SECONDS` 秒宽限期
 3. 宽限期内人数恢复则取消停录；超时后才结束会话
-4. 会话时长低于 `RECORDING_MIN_SESSION_SECONDS` 的 WAV 会被丢弃
-5. `/ts 录制` 启动的**测试会话**不受最低人数与自动停录限制，状态标记为 `[测试]`
-6. 非测试录音手动停录后，若仍满足最低人数，下一轮轮询可能自动重新开始
+4. 监控频道短暂解析失败（如按名配置、瞬时列表不全）时同样走宽限期，不会立刻停录
+5. 会话时长低于 `RECORDING_MIN_SESSION_SECONDS` 的 WAV 会被丢弃
+6. `/ts 录制` 启动的**测试会话**不受最低人数与自动停录限制，状态标记为 `[测试]`
+7. 非测试录音手动停录后，若仍满足最低人数，下一轮轮询可能自动重新开始
 
 每个**同时录制**的频道需要 1 个独立 TS identity；格式需兼容 [tsclientlib](https://github.com/ReSpeak/tsclientlib)。
+
+> 升级插件后请同步更新 sidecar 二进制（重新拉 CI Artifacts 或本地 `cargo build --release`）。新版通过环境变量传递服/频道密码，并以 stdin `STOP` / `SIGTERM` 优雅停录（finalize WAV、正常 disconnect）。旧二进制不认环境变量密码，也无法优雅退出。
 
 ### 获取 sidecar 二进制
 
@@ -329,6 +332,8 @@ NoneBot 与协议端需能访问切片文件的本地路径（同机部署一般
 - 录音 bot 麦克风默认静音，仅接收频道语音
 - 部署前请确保参与者知晓录音行为
 - CI 产物为 Linux 二进制；Windows 需自行编译
+- 监控频道尽量配置**频道 ID**，比频道名更稳
+- 插件与 sidecar 版本需匹配；更新插件后请一并更新 sidecar
 
 ## 输出示例
 

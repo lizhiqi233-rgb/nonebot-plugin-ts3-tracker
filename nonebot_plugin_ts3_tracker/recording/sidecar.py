@@ -11,6 +11,9 @@ from nonebot import logger
 from ..parsing import parse_delimited_list
 from .session import ChannelRecordingSession
 
+SERVER_PASSWORD_ENV = "TS3_RECORDER_SERVER_PASSWORD"
+CHANNEL_PASSWORD_ENV = "TS3_RECORDER_CHANNEL_PASSWORD"
+
 
 class SidecarLauncher:
     def __init__(self, sidecar_path: Path) -> None:
@@ -52,10 +55,17 @@ class SidecarLauncher:
             "--output",
             str(session.wav_path),
         ]
+
+        env = os.environ.copy()
+        # Pass secrets via env so they do not appear in process argv.
         if server_password:
-            command.extend(["--password", server_password])
+            env[SERVER_PASSWORD_ENV] = server_password
+        else:
+            env.pop(SERVER_PASSWORD_ENV, None)
         if channel_password:
-            command.extend(["--channel-password", channel_password])
+            env[CHANNEL_PASSWORD_ENV] = channel_password
+        else:
+            env.pop(CHANNEL_PASSWORD_ENV, None)
 
         output_dir = session.wav_path.parent
         try:
@@ -67,9 +77,12 @@ class SidecarLauncher:
 
         process = await asyncio.create_subprocess_exec(
             *command,
-            stdout=asyncio.subprocess.PIPE,
+            # READY/DONE 走 stderr；stdout 不读会在管道塞满时卡死子进程。
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._sidecar_path.parent),
+            env=env,
         )
         session.process = process
         asyncio.create_task(self._watch_process(session))
@@ -107,12 +120,13 @@ class SidecarLauncher:
             logger.debug("TS3 recorder [{}]: {}", session.channel_id, text)
 
         return_code = await process.wait()
-        if return_code not in (0, None) and ready:
+        if return_code not in (0, None):
             logger.warning(
-                "TS3 recorder exited with code {} for channel {} ({})",
+                "TS3 recorder exited with code {} for channel {} ({}){}",
                 return_code,
                 session.channel_id,
                 session.channel_name,
+                "" if ready else " before READY",
             )
 
 

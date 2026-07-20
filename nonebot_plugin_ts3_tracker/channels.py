@@ -28,20 +28,31 @@ def resolve_channel_tokens(
     status: Ts3ServerStatus,
     *,
     log_missing: bool = True,
+    preferred_ids: set[str] | None = None,
 ) -> dict[str, str]:
     channels_by_id = {channel_id: name for channel_id, name in status.channels}
-    channels_by_name = {
-        name.casefold(): channel_id for channel_id, name in status.channels
-    }
+    channels_by_name: dict[str, list[str]] = {}
+    for channel_id, name in status.channels:
+        channels_by_name.setdefault(name.casefold(), []).append(channel_id)
 
+    preferred = preferred_ids or set()
     resolved: dict[str, str] = {}
     for item in tokens:
         if is_channel_id_token(item):
-            resolved[item] = channels_by_id.get(item, item)
+            channel_name = channels_by_id.get(item)
+            if channel_name is not None:
+                resolved[item] = channel_name
+            elif log_missing:
+                logger.warning("TS3 recording channel id not found on server: {}", item)
             continue
-        matched_id = channels_by_name.get(item.casefold())
-        if matched_id is not None:
-            resolved[matched_id] = channels_by_id.get(matched_id, item)
-        elif log_missing:
-            logger.warning("TS3 recording channel not found on server: {}", item)
+        candidates = channels_by_name.get(item.casefold(), [])
+        if not candidates:
+            if log_missing:
+                logger.warning("TS3 recording channel not found on server: {}", item)
+            continue
+        matched_id = next(
+            (channel_id for channel_id in candidates if channel_id in preferred),
+            candidates[0],
+        )
+        resolved[matched_id] = channels_by_id.get(matched_id, item)
     return resolved

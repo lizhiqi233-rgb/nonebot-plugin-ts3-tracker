@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import signal
 import sys
@@ -46,14 +47,21 @@ class ChannelRecordingSession:
         if self.process.returncode is not None:
             return self.process.returncode
 
-        if sys.platform == "win32":
-            self.process.terminate()
-        else:
-            self.process.send_signal(signal.SIGTERM)
+        # Prefer graceful stop so the sidecar can finalize WAV and disconnect.
+        if self.process.stdin is not None:
+            with contextlib.suppress(Exception):
+                self.process.stdin.write(b"STOP\n")
+                await self.process.stdin.drain()
+                self.process.stdin.close()
+
+        if sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError):
+                self.process.send_signal(signal.SIGTERM)
 
         try:
             await asyncio.wait_for(self.process.wait(), timeout=15.0)
         except asyncio.TimeoutError:
-            self.process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                self.process.kill()
             await self.process.wait()
         return self.process.returncode
