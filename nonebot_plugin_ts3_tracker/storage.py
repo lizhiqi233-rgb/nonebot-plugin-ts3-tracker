@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -18,7 +18,45 @@ class TrackedClientSnapshot:
     first_seen_at: str = ""
 
 
-_SNAPSHOT_FIELD_NAMES = {item.name for item in fields(TrackedClientSnapshot)}
+def _parse_snapshot(
+    key: str,
+    payload: object,
+) -> TrackedClientSnapshot:
+    if not isinstance(payload, dict):
+        raise ValueError(f"snapshot {key!r} must be an object")
+
+    string_fields = (
+        "nickname",
+        "unique_id",
+        "channel_id",
+        "channel_name",
+    )
+    parsed_strings: dict[str, str] = {}
+    for field_name in string_fields:
+        value = payload.get(field_name)
+        if not isinstance(value, str):
+            raise ValueError(f"snapshot {key!r} field {field_name!r} must be a string")
+        parsed_strings[field_name] = value
+
+    duration = payload.get("connected_duration_seconds")
+    if type(duration) is not int or duration < 0:
+        raise ValueError(
+            f"snapshot {key!r} field 'connected_duration_seconds' "
+            "must be a non-negative integer"
+        )
+    away = payload.get("away")
+    if type(away) is not bool:
+        raise ValueError(f"snapshot {key!r} field 'away' must be a boolean")
+    first_seen_at = payload.get("first_seen_at", "")
+    if not isinstance(first_seen_at, str):
+        raise ValueError(f"snapshot {key!r} field 'first_seen_at' must be a string")
+
+    return TrackedClientSnapshot(
+        **parsed_strings,
+        connected_duration_seconds=duration,
+        away=away,
+        first_seen_at=first_seen_at,
+    )
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -50,19 +88,11 @@ class SnapshotStore:
 
         snapshots: dict[str, TrackedClientSnapshot] = {}
         for key, value in raw.items():
-            if not isinstance(key, str) or not isinstance(value, dict):
-                continue
-            filtered = {
-                field_name: value[field_name]
-                for field_name in _SNAPSHOT_FIELD_NAMES
-                if field_name in value
-            }
-            try:
-                snapshots[key] = TrackedClientSnapshot(**filtered)
-            except TypeError:
-                continue
+            if not isinstance(key, str):
+                raise ValueError("snapshot keys must be strings")
+            snapshots[key] = _parse_snapshot(key, value)
 
-        self._last_saved_text = self._serialize(snapshots)
+        self._last_saved_text = raw_text
         return snapshots
 
     def save(self, snapshots: dict[str, TrackedClientSnapshot]) -> bool:
@@ -98,11 +128,13 @@ class GroupNotifyStore:
 
         groups: dict[str, bool] = {}
         for key, value in raw.items():
-            if not isinstance(key, str) or not isinstance(value, bool):
-                continue
+            if not isinstance(key, str) or type(value) is not bool:
+                raise ValueError(
+                    "group notify entries must map string keys to booleans"
+                )
             groups[key] = value
 
-        self._last_saved_text = self._serialize(groups)
+        self._last_saved_text = raw_text
         return groups
 
     def save(self, groups: dict[str, bool]) -> bool:
@@ -115,6 +147,7 @@ class GroupNotifyStore:
 
     def _serialize(self, groups: dict[str, bool]) -> str:
         payload = {
-            key: value for key, value in sorted(groups.items(), key=lambda item: item[0])
+            key: value
+            for key, value in sorted(groups.items(), key=lambda item: item[0])
         }
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)

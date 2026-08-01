@@ -10,9 +10,12 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
 
 from .config import Config
-from .recording.commands import parse_record_command_args, parse_stop_record_command_args
-from .recording.retention import parse_cleanup_command_args
+from .recording.commands import (
+    parse_record_command_args,
+    parse_stop_record_command_args,
+)
 from .recording.manager import RECORDING_DISABLED_MESSAGE
+from .recording.retention import parse_cleanup_command_args
 from .recording.slice import parse_slice_command_args
 from .runtime import Ts3TrackerRuntime
 from .service import Ts3TrackerService
@@ -152,6 +155,7 @@ async def _handle_slice(
     parsed = parse_slice_command_args(
         arg_text,
         default_minutes=plugin_config.recording_slice_default_minutes,
+        max_minutes=plugin_config.recording_slice_max_minutes,
     )
     if isinstance(parsed, str):
         return await finish(parsed)
@@ -401,16 +405,16 @@ async def handle_ts3_plain_cleanup(event: MessageEvent) -> None:
 
 @ts3_plain_status_info.handle()
 async def handle_ts3_plain_status_info(event: MessageEvent) -> None:
-    await _handle_query(
-        event, detailed=True, finish=ts3_plain_status_info.finish
-    )
+    await _handle_query(event, detailed=True, finish=ts3_plain_status_info.finish)
 
 
 @ts3_notify.handle()
 async def handle_ts3_notify(event: MessageEvent, arg: Message = CommandArg()) -> None:
     action = arg.extract_plain_text().strip().lower()
     if action == "on":
-        return await _handle_notify_switch(event, enabled=True, finish=ts3_notify.finish)
+        return await _handle_notify_switch(
+            event, enabled=True, finish=ts3_notify.finish
+        )
     if action == "off":
         return await _handle_notify_switch(
             event, enabled=False, finish=ts3_notify.finish

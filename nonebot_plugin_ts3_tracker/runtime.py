@@ -7,20 +7,11 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import nonebot
-from nonebot import logger, require
+from nonebot import logger
 from nonebot.adapters.onebot.v11 import Bot
-
-require("nonebot_plugin_localstore")
-import nonebot_plugin_localstore as store
 
 from .config import Ts3TrackerSettings
 from .file_send import send_group_file
-from .storage_paths import (
-    ensure_storage_layout,
-    resolve_identities_dir,
-    resolve_recordings_dir,
-    resolve_slices_dir,
-)
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryError
 from .recording import RecordingManager
@@ -28,6 +19,13 @@ from .recording.retention import RetentionTarget
 from .recording.slice import SliceResult
 from .service import Ts3TrackerService
 from .storage import GroupNotifyStore, SnapshotStore, TrackedClientSnapshot
+from .storage_paths import (
+    ensure_storage_layout,
+    get_plugin_data_root,
+    resolve_identities_dir,
+    resolve_recordings_dir,
+    resolve_slices_dir,
+)
 
 MessageSender = Callable[[str, str, str], Awaitable[bool]]
 NowFactory = Callable[[], datetime]
@@ -302,12 +300,18 @@ class Ts3TrackerRuntime:
     ) -> str:
         from .recording.retention import format_cleanup_result
 
-        if target == RetentionTarget.RECORDINGS and self.settings.recording_retention_days <= 0:
+        if (
+            target == RetentionTarget.RECORDINGS
+            and self.settings.recording_retention_days <= 0
+        ):
             return (
                 "未配置完整录音保留天数，请设置 "
                 "TS3_TRACKER__RECORDING_RETENTION_DAYS>0。"
             )
-        if target == RetentionTarget.SLICES and self.settings.recording_slice_retention_days <= 0:
+        if (
+            target == RetentionTarget.SLICES
+            and self.settings.recording_slice_retention_days <= 0
+        ):
             return (
                 "未配置切片保留天数，请设置 "
                 "TS3_TRACKER__RECORDING_SLICE_RETENTION_DAYS>0。"
@@ -343,7 +347,9 @@ class Ts3TrackerRuntime:
                 connected_duration_seconds=user.connected_duration_seconds,
                 away=user.away,
                 first_seen_at=(
-                    previous.first_seen_at if previous and previous.first_seen_at else now_text
+                    previous.first_seen_at
+                    if previous and previous.first_seen_at
+                    else now_text
                 ),
             )
         return snapshots
@@ -378,10 +384,7 @@ class Ts3TrackerRuntime:
         if not messages:
             return
 
-        targets = [
-            ("group", target)
-            for target in self.get_effective_notify_groups()
-        ]
+        targets = [("group", target) for target in self.get_effective_notify_groups()]
         targets.extend(
             ("private", target)
             for target in self.settings.parse_targets(self.settings.notify_target_users)
@@ -403,9 +406,7 @@ class Ts3TrackerRuntime:
     def _format_join_message(
         self, status: Ts3ServerStatus, snapshots: list[TrackedClientSnapshot]
     ) -> str:
-        lines = [
-            f"{snapshot.nickname} 进入了 TS 服务器" for snapshot in snapshots
-        ]
+        lines = [f"{snapshot.nickname} 进入了 TS 服务器" for snapshot in snapshots]
         lines.append(f"在线列表：{self._format_online_list(status)}")
         return "\n".join(lines)
 
@@ -479,14 +480,10 @@ class Ts3TrackerRuntime:
         return None
 
     def _build_snapshot_file(self) -> Path:
-        if self.settings.data_dir:
-            return Path(self.settings.data_dir) / "snapshot.json"
-        return store.get_plugin_data_file("snapshot.json")
+        return get_plugin_data_root(self.settings) / "snapshot.json"
 
     def _build_group_notify_file(self) -> Path:
-        if self.settings.data_dir:
-            return Path(self.settings.data_dir) / "group_notify.json"
-        return store.get_plugin_data_file("group_notify.json")
+        return get_plugin_data_root(self.settings) / "group_notify.json"
 
     def get_effective_notify_groups(self) -> list[str]:
         configured_groups = self.settings.get_notify_groups()
@@ -511,12 +508,23 @@ class Ts3TrackerRuntime:
     ) -> bool:
         normalized_group_id = str(group_id)
         async with self._group_notify_lock:
-            current = self._group_notify_overrides.get(normalized_group_id)
+            was_enabled = normalized_group_id in self.get_effective_notify_groups()
+            had_override = normalized_group_id in self._group_notify_overrides
+            previous = self._group_notify_overrides.get(normalized_group_id)
             self._group_notify_overrides[normalized_group_id] = enabled
-            await asyncio.to_thread(
-                self._group_store.save, self._group_notify_overrides
-            )
-        return current != enabled
+            try:
+                await asyncio.to_thread(
+                    self._group_store.save, self._group_notify_overrides
+                )
+            except Exception:
+                if had_override:
+                    assert previous is not None
+                    self._group_notify_overrides[normalized_group_id] = previous
+                else:
+                    self._group_notify_overrides.pop(normalized_group_id, None)
+                raise
+            is_enabled = normalized_group_id in self.get_effective_notify_groups()
+        return was_enabled != is_enabled
 
     def _user_key(self, user: Ts3OnlineUser) -> str:
         if user.unique_id:
@@ -627,9 +635,7 @@ class Ts3TrackerRuntime:
                 f"{session.wav_path}"
             )
         lines.extend(messages)
-        note = (
-            "说明：非测试录音若在停录后仍满足最低人数，下一轮轮询可能自动重新开始。"
-        )
+        note = "说明：非测试录音若在停录后仍满足最低人数，下一轮轮询可能自动重新开始。"
         if stopped:
             lines.append(note)
         return "\n".join(lines)
@@ -650,6 +656,10 @@ class Ts3TrackerRuntime:
         )
         if minutes <= 0:
             return "切片分钟数必须是正整数。"
+        if minutes > self.settings.recording_slice_max_minutes:
+            return (
+                f"切片分钟数不能超过 {self.settings.recording_slice_max_minutes} 分钟。"
+            )
 
         results, errors = await self._recording_manager.slice_active_sessions(
             duration_minutes=minutes,

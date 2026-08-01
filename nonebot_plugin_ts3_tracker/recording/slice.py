@@ -6,13 +6,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from .paths import normalize_output_basename
-
 # Must stay in sync with recorder_sidecar/src/main.rs (48 kHz mono 16-bit PCM).
 RECORDER_SAMPLE_RATE = 48_000
 RECORDER_CHANNELS = 1
 RECORDER_SAMPLE_WIDTH = 2
 RECORDER_HEADER_BYTES = 44
+SLICE_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -42,37 +41,57 @@ def slice_wav_tail(
 ) -> float:
     if duration_seconds <= 0:
         raise SliceError("slice duration must be positive")
+    if sample_rate <= 0 or sample_width <= 0:
+        raise SliceError("recording format is invalid")
 
-    if not source_path.is_file():
-        raise SliceError(f"source recording not found: {source_path}")
-
-    file_size = source_path.stat().st_size
+    try:
+        file_size = source_path.stat().st_size
+    except OSError as exc:
+        raise SliceError(f"source recording is unavailable: {source_path}") from exc
     if file_size <= header_bytes:
         raise SliceError("source recording has no audio data yet")
 
+    frame_bytes = sample_width * RECORDER_CHANNELS
     pcm_size = file_size - header_bytes
-    bytes_per_second = sample_rate * sample_width * RECORDER_CHANNELS
+    pcm_size -= pcm_size % frame_bytes
+    bytes_per_second = sample_rate * frame_bytes
     requested_bytes = duration_seconds * bytes_per_second
     slice_bytes = min(pcm_size, requested_bytes)
     if slice_bytes <= 0:
         raise SliceError("source recording has no readable audio data")
 
     start_offset = header_bytes + pcm_size - slice_bytes
-    with source_path.open("rb") as reader:
-        reader.seek(start_offset)
-        pcm_data = reader.read(slice_bytes)
-    if len(pcm_data) != slice_bytes:
-        raise SliceError("failed to read requested audio tail from source recording")
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        raise SliceError(f"slice output already exists: {output_path}")
+    try:
+        output_file = output_path.open("xb")
+    except FileExistsError as exc:
+        raise SliceError(f"slice output already exists: {output_path}") from exc
+    except OSError as exc:
+        raise SliceError(f"cannot create slice output: {output_path}") from exc
 
-    with wave.open(str(output_path), "wb") as writer:
-        writer.setnchannels(RECORDER_CHANNELS)
-        writer.setsampwidth(sample_width)
-        writer.setframerate(sample_rate)
-        writer.writeframes(pcm_data)
+    try:
+        with source_path.open("rb") as reader, output_file:
+            reader.seek(start_offset)
+            with wave.open(output_file, "wb") as writer:
+                writer.setnchannels(RECORDER_CHANNELS)
+                writer.setsampwidth(sample_width)
+                writer.setframerate(sample_rate)
+
+                remaining = slice_bytes
+                while remaining:
+                    chunk = reader.read(min(remaining, SLICE_COPY_CHUNK_BYTES))
+                    if not chunk:
+                        raise SliceError(
+                            "failed to read requested audio tail from source recording"
+                        )
+                    writer.writeframesraw(chunk)
+                    remaining -= len(chunk)
+    except SliceError:
+        output_path.unlink(missing_ok=True)
+        raise
+    except (OSError, wave.Error) as exc:
+        output_path.unlink(missing_ok=True)
+        raise SliceError(f"failed to write slice output: {output_path}") from exc
 
     return slice_bytes / bytes_per_second
 
@@ -119,14 +138,12 @@ def parse_slice_command_args(
     raw: str,
     *,
     default_minutes: int,
+    max_minutes: int,
 ) -> SliceCommandArgs | str:
     remainder = raw.removeprefix("切片").strip()
     minutes = default_minutes
     basename: str | None = None
     channel_filter: str | None = None
-
-    if not remainder:
-        return SliceCommandArgs(minutes, basename, channel_filter)
 
     tokens = remainder.split()
     index = 0
@@ -172,7 +189,7 @@ def parse_slice_command_args(
 
     if minutes <= 0:
         return "切片分钟数必须是正整数。"
-    if basename is not None and not normalize_output_basename(basename):
-        return "保存文件名无效，请使用不含路径分隔符的名称。"
+    if minutes > max_minutes:
+        return f"切片分钟数不能超过 {max_minutes} 分钟。"
 
     return SliceCommandArgs(minutes, basename, channel_filter)

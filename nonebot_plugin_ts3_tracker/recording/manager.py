@@ -9,7 +9,11 @@ from nonebot import logger
 from ..channels import channel_matches_token, resolve_channel_tokens
 from ..config import Ts3TrackerSettings
 from ..models import Ts3ServerStatus
-from ..storage_paths import resolve_identities_dir, resolve_recordings_dir, resolve_slices_dir
+from ..storage_paths import (
+    resolve_identities_dir,
+    resolve_recordings_dir,
+    resolve_slices_dir,
+)
 from .paths import build_session_paths, build_slice_paths
 from .retention import (
     RetentionCleanupResult,
@@ -20,6 +24,7 @@ from .retention import (
 from .session import ChannelRecordingSession
 from .sidecar import SidecarLauncher, resolve_identity_entries, resolve_sidecar_path
 from .slice import (
+    RECORDER_HEADER_BYTES,
     SliceError,
     SliceResult,
     slice_wav_tail,
@@ -38,7 +43,8 @@ class RecordingManager:
         self._plugin_dir = plugin_dir
         self._identities_dir = resolve_identities_dir()
         self._launcher = SidecarLauncher(
-            resolve_sidecar_path(settings.recording_sidecar_path, plugin_dir)
+            resolve_sidecar_path(settings.recording_sidecar_path, plugin_dir),
+            debug=settings.debug,
         )
         self._identities = resolve_identity_entries(
             settings.recording_identities, self._identities_dir
@@ -65,7 +71,9 @@ class RecordingManager:
     def is_test_session(self, channel_id: str) -> bool:
         return channel_id in self._test_sessions
 
-    async def sync(self, status: Ts3ServerStatus, *, now: datetime | None = None) -> None:
+    async def sync(
+        self, status: Ts3ServerStatus, *, now: datetime | None = None
+    ) -> None:
         if self._closed or not self.settings.recording_enabled:
             return
 
@@ -158,7 +166,7 @@ class RecordingManager:
                     human_count, participant_names = channel_human_stats(
                         self.settings, status, channel_id
                     )
-                    session.participant_names = participant_names
+                    session.participant_names.update(participant_names)
                 else:
                     # 频道暂时无法解析时不要立刻停录，走与人数不足相同的 grace。
                     human_count = 0
@@ -200,19 +208,17 @@ class RecordingManager:
                             session.channel_name,
                             grace_until.strftime("%Y-%m-%d %H:%M:%S"),
                         )
-                    continue
 
-                if current_time >= grace_until:
-                    self._pending_stops.pop(channel_id, None)
-                    await self._stop_session(channel_id, ended_at=current_time)
+                if current_time < grace_until:
+                    continue
+                self._pending_stops.pop(channel_id, None)
+                await self._stop_session(channel_id, ended_at=current_time)
 
             for channel_id in sorted(monitored.keys()):
                 if channel_id in self._sessions:
                     continue
                 self._pending_stops.pop(channel_id, None)
-                human_count, _ = channel_human_stats(
-                    self.settings, status, channel_id
-                )
+                human_count, _ = channel_human_stats(self.settings, status, channel_id)
                 if human_count < min_humans:
                     continue
                 channel_name = monitored.get(channel_id, "unnamed")
@@ -277,9 +283,7 @@ class RecordingManager:
                     disambiguate_channel=disambiguate_channel,
                 )
             except ValueError as exc:
-                errors.append(
-                    f"{session.channel_name} ({session.channel_id})：{exc}"
-                )
+                errors.append(f"{session.channel_name} ({session.channel_id})：{exc}")
                 continue
             try:
                 actual_seconds = await asyncio.to_thread(
@@ -289,9 +293,7 @@ class RecordingManager:
                     duration_seconds=duration_seconds,
                 )
             except SliceError as exc:
-                errors.append(
-                    f"{session.channel_name} ({session.channel_id})：{exc}"
-                )
+                errors.append(f"{session.channel_name} ({session.channel_id})：{exc}")
                 continue
 
             result = SliceResult(
@@ -342,7 +344,9 @@ class RecordingManager:
         current_time = started_at or datetime.now()
         monitored = self._resolve_monitored_channels(status)
         if not monitored:
-            return [], ["未解析到可录制的监控频道，请检查 TS3_TRACKER__RECORDING_CHANNELS。"]
+            return [], [
+                "未解析到可录制的监控频道，请检查 TS3_TRACKER__RECORDING_CHANNELS。"
+            ]
 
         targets = dict(monitored)
         if channel_filter is not None:
@@ -561,9 +565,7 @@ class RecordingManager:
             metadata_path=metadata_path,
             started_at=started_at,
             nickname=nickname,
-            participant_names=channel_human_stats(
-                self.settings, status, channel_id
-            )[1],
+            participant_names=channel_human_stats(self.settings, status, channel_id)[1],
         )
         self._sessions[channel_id] = session
 
@@ -599,18 +601,13 @@ class RecordingManager:
         if session is None:
             return
 
-        await session.terminate()
+        exit_code = await session.terminate()
         duration = (ended_at - session.started_at).total_seconds()
-        if duration >= self.settings.recording_min_session_seconds:
-            await asyncio.to_thread(session.write_metadata, ended_at=ended_at)
-            logger.info(
-                "TS3 recording saved for channel {} ({}), duration {:.0f}s -> {}",
-                session.channel_id,
-                session.channel_name,
-                duration,
-                session.wav_path,
-            )
-        elif session.wav_path.exists():
+        has_audio = await asyncio.to_thread(
+            self._has_audio_file,
+            session.wav_path,
+        )
+        if duration < self.settings.recording_min_session_seconds:
             await asyncio.to_thread(self._discard_session_files, session)
             logger.info(
                 "TS3 recording discarded for channel {} ({}), duration {:.0f}s below minimum",
@@ -618,9 +615,41 @@ class RecordingManager:
                 session.channel_name,
                 duration,
             )
+        elif not has_audio:
+            await asyncio.to_thread(self._discard_session_files, session)
+            logger.error(
+                "TS3 recorder produced no usable audio for channel {} ({}) "
+                "with exit code {}",
+                session.channel_id,
+                session.channel_name,
+                exit_code,
+            )
+        else:
+            await asyncio.to_thread(
+                session.write_metadata,
+                ended_at=ended_at,
+                exit_code=exit_code,
+            )
+            log = logger.info if exit_code in (0, None) else logger.warning
+            log(
+                "TS3 recording saved for channel {} ({}), duration {:.0f}s, "
+                "exit code {} -> {}",
+                session.channel_id,
+                session.channel_name,
+                duration,
+                exit_code,
+                session.wav_path,
+            )
 
         self._sessions.pop(channel_id, None)
         self._identity_pool.append(session.identity)
+
+    @staticmethod
+    def _has_audio_file(path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size > RECORDER_HEADER_BYTES
+        except OSError:
+            return False
 
     @staticmethod
     def _discard_session_files(session: ChannelRecordingSession) -> None:

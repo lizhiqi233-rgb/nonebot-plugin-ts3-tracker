@@ -112,7 +112,7 @@ TS3_TRACKER__NOTIFY_TARGET_GROUPS=100000000
 
 #### 切片参数
 
-默认截取最近 **3** 分钟（由 `RECORDING_SLICE_DEFAULT_MINUTES` 控制）。
+默认截取最近 **3** 分钟（由 `RECORDING_SLICE_DEFAULT_MINUTES` 控制），单次请求默认最多 **60** 分钟（由 `RECORDING_SLICE_MAX_MINUTES` 控制）。
 
 | 参数 | 说明 | 示例 |
 | --- | --- | --- |
@@ -124,6 +124,8 @@ TS3_TRACKER__NOTIFY_TARGET_GROUPS=100000000
 参数可组合，例如：`/ts 切片 -sm 3 测试 -c Lobby`。
 
 切片前提：对应频道存在**进行中的录音会话**，且 WAV 中已有音频数据。可用 `/ts 录制` 在空频道启动测试录音进行验证。
+
+切片文件只通过 `UniMessage` 发送一次。发送结果不确定时不会切换其他接口重试，避免大文件重复发送。
 
 ### 无前缀模式示例
 
@@ -194,6 +196,7 @@ ts 清理 切片
 | `RECORDING_MIN_HUMAN_COUNT` | `2` | 频道内至少多少**真人**（不含 RecBot）才开始录音 |
 | `RECORDING_STOP_GRACE_SECONDS` | `300` | 真人不足阈值后，延迟多少秒再结束录音；期间人数恢复则继续 |
 | `RECORDING_SLICE_DEFAULT_MINUTES` | `3` | `/ts 切片` 未指定 `-s` / `-sm` 时的默认分钟数 |
+| `RECORDING_SLICE_MAX_MINUTES` | `60` | `/ts 切片` 单次允许请求的最大分钟数 |
 | `RECORDING_RETENTION_DAYS` | `7` | 完整录音保留天数；`0` 表示不自动清理 |
 | `RECORDING_SLICE_RETENTION_DAYS` | `7` | 切片保留天数；`0` 表示不自动清理 |
 | `RECORDING_CLEANUP_TIME` | `04:00` | 每日自动清理的本地时间（`HH:MM`）；启动时也会执行一次 |

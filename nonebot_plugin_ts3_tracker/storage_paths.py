@@ -4,10 +4,10 @@ from pathlib import Path
 
 from nonebot import require
 
-require("nonebot_plugin_localstore")
-import nonebot_plugin_localstore as store
-
 from .config import Ts3TrackerSettings
+
+require("nonebot_plugin_localstore")
+import nonebot_plugin_localstore as store  # noqa: E402
 
 RECORDINGS_DIR_NAME = "recordings"
 SLICES_DIR_NAME = "slices"

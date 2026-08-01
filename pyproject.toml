@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-ts3-tracker"
-version = "1.2.0"
+version = "1.2.1"
 description = "TeamSpeak 3 query, join/leave notification, and channel recording plugin for NoneBot2"
 authors = [{ name = "lizhiqi233-rgb" }]
 readme = "README.md"
@@ -39,8 +39,14 @@ line-ending = "lf"
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 ignore = ["B008", "E501", "RUF001"]
 
-[tool.setuptools]
-packages = ["nonebot_plugin_ts3_tracker"]
+[tool.setuptools.packages.find]
+include = ["nonebot_plugin_ts3_tracker*"]
+
+[tool.setuptools.package-data]
+nonebot_plugin_ts3_tracker = [
+  "recorder_sidecar/bin/linux-aarch64/ts3-recorder-sidecar",
+  "recorder_sidecar/bin/linux-x86_64/ts3-recorder-sidecar",
+]
 
 [build-system]
 requires = ["setuptools>=69.0", "wheel"]

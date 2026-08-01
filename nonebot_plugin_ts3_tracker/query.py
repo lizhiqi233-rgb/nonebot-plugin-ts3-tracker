@@ -51,6 +51,7 @@ class Ts3QueryClient:
         password: str,
         query_port: int = 10011,
         timeout: float = 10.0,
+        debug: bool = False,
     ) -> None:
         self.host = host
         self.server_port = server_port
@@ -58,6 +59,7 @@ class Ts3QueryClient:
         self.username = username
         self.password = password
         self.timeout = timeout
+        self.debug = debug
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
@@ -77,9 +79,7 @@ class Ts3QueryClient:
                     )
                 except asyncio.TimeoutError as exc:
                     await self._disconnect_unlocked()
-                    last_error = Ts3QueryError(
-                        f"TS3 查询超时（{self.timeout:.0f} 秒）"
-                    )
+                    last_error = Ts3QueryError(f"TS3 查询超时（{self.timeout:.0f} 秒）")
                     last_error.__cause__ = exc
                 except Ts3QueryError as exc:
                     await self._disconnect_unlocked()
@@ -182,7 +182,8 @@ class Ts3QueryClient:
                     unique_id=client.get("client_unique_identifier", ""),
                     connected_duration_seconds=max(
                         0,
-                        self._safe_int(client.get("connection_connected_time"), 0) // 1000,
+                        self._safe_int(client.get("connection_connected_time"), 0)
+                        // 1000,
                     ),
                     away=client.get("client_away", "0") == "1",
                 )
@@ -213,7 +214,7 @@ class Ts3QueryClient:
         return self._parse_response(lines, action)
 
     async def _write_line(self, writer: asyncio.StreamWriter, line: str) -> None:
-        writer.write(f"{line}\n".encode("utf-8"))
+        writer.write(f"{line}\n".encode())
         await writer.drain()
 
     async def _consume_welcome(self, reader: asyncio.StreamReader) -> None:
@@ -233,7 +234,8 @@ class Ts3QueryClient:
             if "TeamSpeak 3 ServerQuery interface" in line:
                 return
 
-            logger.debug("TS3 ServerQuery welcome line: {}", line)
+            log = logger.info if self.debug else logger.debug
+            log("TS3 ServerQuery welcome line: {}", line)
 
     async def _read_response(self, reader: asyncio.StreamReader) -> list[str]:
         lines: list[str] = []

@@ -39,6 +39,7 @@ class Ts3TrackerSettings(BaseModel):
     recording_min_human_count: int = 2
     recording_stop_grace_seconds: int = 300
     recording_slice_default_minutes: int = 3
+    recording_slice_max_minutes: int = 60
     # 0 表示不自动清理；按目录日期 YYYY-MM-DD 判定过期
     recording_retention_days: int = 7
     recording_slice_retention_days: int = 7
@@ -86,9 +87,12 @@ class Ts3TrackerSettings(BaseModel):
     def validate_recording_stop_grace(cls, value: int) -> int:
         return max(0, value)
 
-    @field_validator("recording_slice_default_minutes")
+    @field_validator(
+        "recording_slice_default_minutes",
+        "recording_slice_max_minutes",
+    )
     @classmethod
-    def validate_recording_slice_default_minutes(cls, value: int) -> int:
+    def validate_recording_slice_minutes(cls, value: int) -> int:
         return max(1, value)
 
     @field_validator("recording_retention_days", "recording_slice_retention_days")

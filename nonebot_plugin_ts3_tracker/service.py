@@ -8,7 +8,6 @@ from .config import Ts3TrackerSettings
 from .models import Ts3OnlineUser, Ts3ServerStatus
 from .query import Ts3QueryClient, Ts3QueryError
 
-
 QueryClientFactory = Callable[[], Ts3QueryClient]
 DurationProvider = Callable[[Ts3OnlineUser], int | None]
 
@@ -155,12 +154,11 @@ class Ts3TrackerService:
                 username=self.settings.serverquery_username,
                 password=self.settings.serverquery_password,
                 timeout=self.settings.query_timeout_seconds,
+                debug=self.settings.debug,
             )
         return self._client
 
-    def _format_user_display(
-        self, user: Ts3OnlineUser, *, show_duration: bool
-    ) -> str:
+    def _format_user_display(self, user: Ts3OnlineUser, *, show_duration: bool) -> str:
         if not show_duration:
             return user.nickname
         duration = self._get_user_duration_seconds(user)
